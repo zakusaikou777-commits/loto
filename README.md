@@ -5,54 +5,106 @@ GitHub Pages に置けば、**当せん番号が週2回、自動で最新に更�
 
 ---
 
-## 公開のしかた（GitHub Pages・所要10分）
+## 公開のしかた（GitHub の web 画面だけで完結・所要15分）
+
+コマンドや git のインストールは不要です。ブラウザだけで公開できます。
+
+### 0. 前提: リポジトリは Public にする
+
+**GitHub Free では、Pages を使うにはリポジトリが Public である必要があります。**
+Private リポジトリから公開できるのは GitHub Pro / Team / Enterprise のみです。
+
+このアプリは公開されて困る情報を含みません（当せん履歴やマイ番号は
+利用者のブラウザ内にだけ保存され、リポジトリには入りません）。
 
 ### 1. リポジトリを作る
 
-GitHub で新しいリポジトリを作成します（Public / Private どちらでも可）。
+[github.com/new](https://github.com/new) を開き、
 
-### 2. このフォルダの中身をアップロード
+- **Repository name**: 例 `loto-lab`（この名前がURLに入ります）
+- **Public** を選択
+- **Add a README file** に**チェックを入れる**（空だとファイルを追加しづらいため）
 
-**フォルダごとではなく、中身をリポジトリ直下に**置いてください。`.github` フォルダも忘れずに。
+**Create repository** を押します。
+
+### 2. アプリ本体をアップロード
+
+リポジトリの **Add file → Upload files** を開き、
+zip を展開した `loto-lab-pwa` フォルダの**中身**をドラッグ&ドロップします。
+
+アップロードするもの:
 
 ```
-リポジトリ直下/
-├── index.html
-├── sw.js
-├── manifest.webmanifest
-├── icon-192.png
-├── icon-512.png
-├── data/
-│   ├── loto6.json          ← 自動更新される
-│   └── loto7.json
-├── tools/
-│   ├── update-loto.mjs     ← 更新スクリプト
-│   ├── test-parser.mjs     ← パーサの回帰テスト
-│   ├── test-app.mjs        ← アプリのロジック検証
-│   └── package.json
-└── .github/workflows/
-    └── update-loto.yml     ← 週2回の自動実行
+index.html   sw.js   manifest.webmanifest   icon-192.png   icon-512.png
+data/  （フォルダごと）
+tools/ （フォルダごと）
 ```
 
-> `.github` はドット始まりのため、Finder や Explorer のドラッグ&ドロップで
-> 見落とされがちです。アップロード後にリポジトリ上で存在を確認してください。
+**フォルダごとではなく中身を置いてください。**
+`loto-lab-pwa` フォルダごと入れると URL が
+`…github.io/loto-lab/loto-lab-pwa/` と一段深くなります。
 
-### 3. Pages を有効にする
+下部の **Commit changes** を押します。
 
-**Settings → Pages → Source: Deploy from a branch → Branch: main / (root)** で保存。
-数分後に `https://ユーザー名.github.io/リポジトリ名/` が開けるようになります。
+> `.github` フォルダはここでは**アップロードできません**（次の手順で作ります）。
+> ドット始まりのフォルダは macOS の Finder や Windows のエクスプローラーで
+> 非表示になっており、ドラッグ&ドロップでは取りこぼされます。
 
-### 4. Actions に書き込み権限を与える
+### 3. ワークフローを web 画面で作る
 
-**Settings → Actions → General → Workflow permissions** で
-**「Read and write permissions」** を選んで保存します。
-これを忘れると、自動更新が結果をコミットできずに失敗します。
+自動更新の設定ファイルは、パスを直接入力して作ります。
 
-### 5. 初回のデータを取得する
+1. **Add file → Create new file** を開く
+2. ファイル名の欄に次を**そのまま入力**します（`/` を打つとフォルダが自動でできます）
 
-**Actions タブ → 「当せん番号の自動更新」 → Run workflow** を手動実行。
-成功すると `data/loto6.json` と `data/loto7.json` に当せん番号が入り、
-以降はアプリを開くだけで最新結果が反映されます。
+   ```
+   .github/workflows/update-loto.yml
+   ```
+
+3. zip 内の `.github/workflows/update-loto.yml` をテキストエディタで開き、
+   **中身を全部コピーして貼り付け**
+4. **Commit changes** を押す
+
+### 4. Pages を有効にする
+
+**Settings** タブ → 左サイドバー「Code and automation」の **Pages** →
+「Build and deployment」の **Source** で **Deploy from a branch** を選び、
+Branch を **main** / **/ (root)** にして **Save**。
+
+数分後、同じ画面の上部に公開URLが出ます。
+
+```
+https://<ユーザー名>.github.io/<リポジトリ名>/
+```
+
+### 5. 当せん番号を取り込む
+
+**Actions** タブ → 左の **当せん番号の自動更新** → 右の **Run workflow** →
+緑の **Run workflow** ボタン。
+
+3〜5分で完了し、`data/loto6.json` と `data/loto7.json` に当せん番号が入ります。
+以降は火・金・水・土の朝に自動で実行されます。
+
+> Actions タブで「Workflows aren't being run on this forked repository」等が出る場合は、
+> **I understand my workflows, go ahead and enable them** を押してください。
+
+### 6. スマホでアプリとして入れる
+
+公開URLをスマホで開き、
+iPhone は共有ボタン →「ホーム画面に追加」、
+Android はメニュー →「アプリをインストール」。
+
+---
+
+### うまくいかないとき
+
+| 症状 | 原因と対処 |
+|---|---|
+| Settings に Pages が無い | リポジトリが Private になっている。Settings 最下部の Danger Zone →「Change repository visibility」で Public に変更 |
+| 404 が出る | 反映に数分かかります。URL 末尾の `/` を忘れていないかも確認 |
+| 画面は出るがデータが空 | 手順5のワークフローをまだ実行していない。または失敗している（Actions タブで赤い×を確認） |
+| ワークフローが `Permission denied` / 403 で失敗 | **Settings → Actions → General → Workflow permissions** で **Read and write permissions** を選んで Save し、再実行 |
+| ワークフローが取得に失敗する | みずほ側の一時的な遮断や形式変更の可能性。`data/` は書き換えられないので、アプリは直前のデータのまま動きます。自動でIssueが立ちます |
 
 ---
 
