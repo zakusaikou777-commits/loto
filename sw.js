@@ -4,7 +4,7 @@
  * （旧版は index.html をキャッシュ優先で返していたため、
  *   再アップロードしても永久に古い画面が出るという不具合がありました）
  */
-const APP_VERSION = 'v2.1.0';
+const APP_VERSION = 'v2.2.0';
 const CACHE = 'lotolab-' + APP_VERSION;
 
 const ASSETS = [

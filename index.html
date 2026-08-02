@@ -767,6 +767,71 @@ function backtest(draws,cfg,trials){
   return {train:train.length,test:test.length,trials,rows,expAvg,expHit,maxZ};
 }
 
+/* ===== 組み合わせの診断 =====
+   買う予定の番号について「各数字がいつ・何回出たか」「過去の抽せんと何個一致したか」を出す。
+   どれも過去の記録であって、次回の当たりやすさとは無関係。 */
+function diagnose(nums,draws,cfg){
+  const set=new Set(nums);
+  const chrono=[...draws].sort(byChrono);      // 古い順
+  const rev=[...chrono].reverse();             // 新しい順（「何回前」を数えるため）
+  const N=chrono.length;
+
+  // 1) 数字ごとの出現回数と最終出現
+  const per=nums.map(n=>{
+    let count=0,gap=-1,last=null;
+    for(let i=0;i<rev.length;i++){
+      if(rev[i].numbers.indexOf(n)>=0){ count++; if(gap<0){gap=i;last=rev[i];} }
+    }
+    return {n,count,gap,last};
+  });
+  const perExp=N*cfg.pick/cfg.max;             // 1つの番号の理論上の出現回数
+
+  // 2) 一致数の分布・最高一致・完全一致・ペアの共起（1周で全部数える）
+  const dist=new Array(cfg.pick+1).fill(0);
+  const pairCount=new Map();
+  const matches=[];
+  for(const d of chrono){
+    const hit=[];
+    for(const x of d.numbers) if(set.has(x)) hit.push(x);
+    dist[hit.length]++;
+    if(hit.length>=2){
+      for(let i=0;i<hit.length;i++)for(let j=i+1;j<hit.length;j++){
+        const k=Math.min(hit[i],hit[j])*100+Math.max(hit[i],hit[j]);
+        pairCount.set(k,(pairCount.get(k)||0)+1);
+      }
+    }
+    if(hit.length>=3) matches.push({d,hit:hit.sort((a,b)=>a-b)});
+  }
+  const distExp=[]; for(let j=0;j<=cfg.pick;j++) distExp.push(hyperP(cfg,j)*N);
+  matches.sort((a,b)=>b.hit.length-a.hit.length || (a.d.date<b.d.date?1:-1));
+  const exact=matches.filter(m=>m.hit.length===cfg.pick);
+  const bestM=matches.length?matches[0].hit.length:Math.max(0,...dist.map((v,i)=>v?i:0));
+
+  // 3) この組み合わせに含まれるペアの共起回数
+  const pairs=[];
+  for(let i=0;i<nums.length;i++)for(let j=i+1;j<nums.length;j++){
+    const a=Math.min(nums[i],nums[j]),b=Math.max(nums[i],nums[j]);
+    pairs.push({a,b,c:pairCount.get(a*100+b)||0});
+  }
+  pairs.sort((x,y)=>y.c-x.c||x.a-y.a);
+  const pairExp=N*comb(cfg.pick,2)/comb(cfg.max,2);
+
+  // 4) 組み合わせの形
+  const srt=[...nums].sort((a,b)=>a-b);
+  const sum=srt.reduce((a,b)=>a+b,0);
+  const odd=srt.filter(n=>n%2===1).length;
+  const low=srt.filter(n=>n<=cfg.max/2).length;
+  let consec=0; for(let i=1;i<srt.length;i++) if(srt[i]===srt[i-1]+1) consec++;
+  const a=analyzeCached(draws,cfg);
+
+  // 3個以上一致の理論値（1回の抽せんあたり）
+  let hit3=0; for(let j=3;j<=cfg.pick;j++) hit3+=hyperP(cfg,j);
+
+  return {N,per,perExp,dist,distExp,matches:matches.slice(0,6),exact,bestM,pairs,pairExp,
+    sum,odd,low,consec,hit3Exp:hit3*N,hit3Obs:dist.slice(3).reduce((x,y)=>x+y,0),
+    avgSum:a.sumStats?a.sumStats.avg:0,avgOdd:a.avgOdd,avgLow:a.avgLow};
+}
+
 /* ===== HTML パーツ ===== */
 function ballHTML(n,tone,size=38){return '<span class="ball ball-'+tone+'" style="width:'+size+'px;height:'+size+'px;font-size:'+(size*0.42).toFixed(1)+'px">'+n+'</span>';}
 /* 出現頻度は「大きさ」の表現なので逐次ランプ（単一色相・明度単調）にする。
@@ -957,6 +1022,90 @@ function renderBacktest(){
   return h;
 }
 
+function renderDiagnosis(nums,cfg){
+  const draws=state.store[state.game];
+  if(draws.length<10) return '<div class="hintbox">診断には10回分以上の履歴が必要です（現在'+draws.length+'回）。データタブで取り込んでください。</div>';
+  const g=diagnose(nums,draws,cfg);
+  let h='';
+
+  // --- 数字ごと ---
+  let rows='';
+  g.per.forEach(x=>{
+    const lastTxt = x.last
+      ? (x.last.round!=null?'第'+x.last.round+'回 ':'')+fmtDate(x.last.date)
+      : '<span style="color:var(--cold)">未出現</span>';
+    const gapTxt = x.gap<0 ? '—' : (x.gap===0?'<b style="color:var(--gold2)">前回</b>':x.gap+'回前');
+    rows+='<tr><td>'+ballHTML(x.n,'mini',26)+'</td>'
+      +'<td class="n">'+x.count+' 回</td>'
+      +'<td class="n" style="color:var(--mut)">'+g.perExp.toFixed(1)+' 回</td>'
+      +'<td class="n">'+gapTxt+'</td>'
+      +'<td style="font-size:11px;color:var(--mut)">'+lastTxt+'</td></tr>';
+  });
+  h+=card('選んだ数字のこれまで',g.N+'回分の履歴での出現状況',
+    '<div class="btwrap"><table class="ptable"><thead><tr><th>数字</th><th style="text-align:right">出現</th>'
+    +'<th style="text-align:right">理論値</th><th style="text-align:right">最後に出てから</th><th>最終出現</th></tr></thead>'
+    +'<tbody>'+rows+'</tbody></table></div>'
+    +'<p class="rnote">理論値は '+g.N+'回×'+cfg.pick+'個÷'+cfg.max+' = '+g.perExp.toFixed(1)+'回。'
+    +'よく出ている数字も、ご無沙汰の数字も、次回に出る確率は同じ '+(cfg.pick/cfg.max*100).toFixed(1)+'% です。</p>');
+
+  // --- 過去の抽せんとの一致 ---
+  const scale=Math.max(...g.dist,...g.distExp)*1.15||1;
+  let dr='';
+  for(let j=0;j<=cfg.pick;j++) dr+=cmpRow(j+'個',g.dist[j],g.distExp[j],scale,v=>v.toFixed(1)+'回');
+  h+=card('過去の抽せんと何個一致したか','この'+cfg.pick+'個を'+g.N+'回すべてと突き合わせた結果',
+    '<div class="cmp">'+dr+'</div>'+cmpLegend('実測（この組み合わせ）','理論値（どの組み合わせでもこうなる）')
+    +'<div class="rstats" style="margin-top:14px">'
+      +'<div class="rcell"><span>最高一致</span><b>'+g.bestM+' 個</b></div>'
+      +'<div class="rcell"><span>3個以上一致した回</span><b>'+g.hit3Obs+' 回 <i style="font-size:11px;color:var(--mut);font-style:normal">/ 理論 '+g.hit3Exp.toFixed(1)+'</i></b></div>'
+    +'</div>'
+    +(g.exact.length
+       ? '<div class="verdict warn" style="margin-top:12px"><b>この組み合わせは過去に完全一致しています</b>（'
+         +g.exact.map(m=>(m.d.round!=null?'第'+m.d.round+'回':fmtDate(m.d.date))).join(' / ')
+         +'）。なお同じ組み合わせが再び出る確率も、他と同じです。</div>'
+       : '<p class="rnote">この'+cfg.pick+'個がそっくり出たことは、'+g.N+'回の履歴の中にはありません。'
+         +'全'+Math.round(comb(cfg.max,cfg.pick)).toLocaleString()+'通りあるので、これはごく普通のことです。</p>'));
+
+  // --- 近かった回 ---
+  if(g.matches.length){
+    let ml='';
+    g.matches.forEach(m=>{
+      const balls=m.d.numbers.map(n=>ballHTML(n,m.hit.indexOf(n)>=0?'gold':'ghost',26)).join('');
+      ml+='<div class="trow"><span class="hround" style="min-width:52px">'
+        +(m.d.round!=null?'第'+m.d.round+'回':'')+'</span>'
+        +'<span class="hdate">'+fmtDate(m.d.date)+'</span>'
+        +'<div class="tnums">'+balls+'</div>'
+        +'<span class="tres '+(m.hit.length>=cfg.pick-1?'twin':'tmid')+'">'+m.hit.length+'個一致</span></div>';
+    });
+    h+=card('近かった回','3個以上一致した回のうち上位'+g.matches.length+'件（金色が一致した数字）','<div class="tlist">'+ml+'</div>');
+  }
+
+  // --- ペアの相性 ---
+  let pr='';
+  g.pairs.slice(0,6).forEach(x=>{
+    pr+='<tr><td><span class="pairballs">'+ballHTML(x.a,'mini',24)+ballHTML(x.b,'mini',24)+'</span></td>'
+      +'<td class="n">'+x.c+' 回</td><td class="n" style="color:var(--mut)">'+g.pairExp.toFixed(1)+' 回</td></tr>';
+  });
+  h+=card('選んだ数字どうしの組み合わせ','同じ回に一緒に出た回数（多い順に6組）',
+    '<table class="ptable"><thead><tr><th>ペア</th><th style="text-align:right">一緒に出た</th><th style="text-align:right">理論値</th></tr></thead><tbody>'+pr+'</tbody></table>'
+    +'<p class="rnote">「相性のよいペア」という考え方は成り立ちません。'
+    +'どのペアも一緒に出る確率は同じ '+(comb(cfg.pick,2)/comb(cfg.max,2)*100).toFixed(2)+'% です。</p>');
+
+  // --- 組み合わせの形 ---
+  const cmpCell=(label,v,avg,unit)=>'<div class="rcell"><span>'+label+'</span><b>'+v
+    +(unit||'')+' <i style="font-size:11px;color:var(--mut);font-style:normal">/ 平均 '+avg+'</i></b></div>';
+  h+=card('組み合わせの形','過去の平均と比べてどうか',
+    '<div class="rstats">'
+    +cmpCell('合計値',g.sum,g.avgSum.toFixed(0))
+    +cmpCell('奇数の個数',g.odd,g.avgOdd.toFixed(1))
+    +cmpCell('低い数(1〜'+Math.floor(cfg.max/2)+')',g.low,g.avgLow.toFixed(1))
+    +'<div class="rcell"><span>連番</span><b>'+(g.consec?g.consec+' 組':'なし')+'</b></div>'
+    +'</div>'
+    +'<p class="rnote">平均から離れていても不利ではありません。合計値や奇偶は結果を見て集計しているだけで、'
+    +'どの組み合わせも当せん確率は '+(1/comb(cfg.max,cfg.pick)).toExponential(2)+'（'
+    +Math.round(comb(cfg.max,cfg.pick)).toLocaleString()+'分の1）で同じです。</p>');
+  return h;
+}
+
 function renderGenerate(){
   const cfg=GAMES[state.game]; const a=analyzeCached(state.store[state.game],cfg);
   const S=[['random','完全ランダム','均等な確率で抽選'],['hot','ホット重視','よく出ている番号を優先'],['cold','コールド重視','あまり出ていない番号を優先'],['balanced','バランス型','合計値・奇偶を過去平均に寄せる'],['unpopular','不人気ねらい','32以上と連番中心で被りにくく']];
@@ -981,7 +1130,15 @@ function renderTickets(){
   const cfg=GAMES[state.game];
   let pk=''; for(let n=1;n<=cfg.max;n++){const on=state.tsel.includes(n);const dis=!on&&state.tsel.length>=cfg.pick;pk+='<button class="pk'+(on?' on':'')+'" data-action="ttoggle" data-n="'+n+'"'+(dis?' disabled':'')+'>'+n+'</button>';}
   const builder='<div class="picker">'+pk+'</div><div class="addrow"><button class="minighost" data-action="trandom">おまかせ</button><button class="minighost" data-action="tclear">クリア</button><button class="primary" data-action="tadd"'+(state.tsel.length!==cfg.pick?' disabled':'')+'>登録</button></div>';
-  let h=card('買った番号を登録','数字を '+cfg.pick+' 個タップ ('+state.tsel.length+'/'+cfg.pick+')　※登録日以降の抽せんのみ照合します',builder);
+  let h=card('買う番号を選ぶ','数字を '+cfg.pick+' 個タップ ('+state.tsel.length+'/'+cfg.pick+')　'+cfg.pick+'個そろうと下に診断が出ます',builder);
+
+  // 選択が完成したら、その組み合わせの診断を表示する
+  if(state.tsel.length===cfg.pick){
+    h+='<div class="lead">選んだ番号 '+[...state.tsel].sort((a,b)=>a-b).join(' ')+' の診断</div>';
+    h+=renderDiagnosis([...state.tsel].sort((a,b)=>a-b),cfg);
+  }else if(state.tsel.length>0){
+    h+='<div class="hintbox">あと '+(cfg.pick-state.tsel.length)+' 個選ぶと、この組み合わせの診断（各数字の出現回数・最終出現・過去の抽せんとの一致数など）が表示されます。</div>';
+  }
   const tickets=state.tickets[state.game]; const draws=state.store[state.game];
   if(tickets.length===0){
     h+=card('登録した番号 (0口)','','<p class="muted">まだありません。上で登録すると、以降に取り込まれた抽せん結果と自動で照合します。</p>');
@@ -995,7 +1152,9 @@ function renderTickets(){
         else badge=best?'<span class="tres twin">'+best.label+' ・ '+fmtDate(best.date)+'</span>'
                        :'<span class="tres tlose">当選なし（'+checked+'回照合）</span>';
       }
-      return '<div class="trow"><div class="tnums">'+tk.numbers.map(n=>ballHTML(n,'mini',26)).join('')+'</div>'+badge+'<button class="del" data-action="tdel" data-id="'+tk.id+'">×</button></div>';
+      return '<div class="trow"><div class="tnums">'+tk.numbers.map(n=>ballHTML(n,'mini',26)).join('')+'</div>'+badge
+        +'<button class="edit" data-action="tdiag" data-id="'+tk.id+'" title="この番号を診断">🔍</button>'
+        +'<button class="del" data-action="tdel" data-id="'+tk.id+'">×</button></div>';
     }).join('');
     h+=card('登録した番号 ('+tickets.length+'口)','各番号の登録日以降の抽せんのみを照合し、最高ランクを表示','<div class="toolrow"><button class="minidanger" data-action="tclearAll">全消去</button></div><div class="tlist">'+list+'</div>');
   }
@@ -1208,6 +1367,7 @@ document.addEventListener('click',e=>{
     case 'toggleAutoSync': state.autoSync=!state.autoSync; save(); break;
     case 'ttoggle': { const n=+t.dataset.n; if(state.tsel.includes(n))state.tsel=state.tsel.filter(x=>x!==n); else if(state.tsel.length<cfg.pick)state.tsel=[...state.tsel,n]; break; }
     case 'tclear': state.tsel=[]; break;
+    case 'tdiag': { const tk=state.tickets[state.game].find(x=>x.id===t.dataset.id); if(tk) state.tsel=[...tk.numbers]; break; }
     case 'trandom': state.tsel=pickRandom(cfg.max,cfg.pick); break;
     case 'tadd': { if(state.tsel.length!==cfg.pick)return; const nums=[...state.tsel].sort((x,y)=>x-y); state.tickets[state.game]=[...state.tickets[state.game],{id:uid(),numbers:nums,since:todayISO()}]; state.tsel=[]; save(); flash('番号を登録しました（本日以降の抽せんと照合します）'); return; }
     case 'tdel': state.tickets[state.game]=state.tickets[state.game].filter(x=>x.id!==t.dataset.id); save(); break;

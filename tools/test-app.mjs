@@ -24,7 +24,7 @@ console.log('\n[1] 必要な関数が全て存在するか');
 const NEEDED = ['analyze', 'analyzeCached', 'deepAnalyze', 'backtest', 'makeTicket', 'generate',
   'renderAnalysis', 'renderGenerate', 'renderTickets', 'renderData', 'renderDeep', 'renderBacktest',
   'editBoxHTML', 'cmpRow', 'cmpRowSE', 'cmpLegend', 'verdict', 'parseTable', 'parseJson', 'parseImport',
-  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'render'];
+  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'diagnose', 'renderDiagnosis', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'render'];
 const missing = NEEDED.filter((n) => !new RegExp(`function ${n}\\b`).test(script));
 ok(`${NEEDED.length}個の関数が定義済み`, missing.length === 0, `未定義: ${missing.join(', ')}`);
 
@@ -49,7 +49,7 @@ console.log('\n[4] アプリのパーサを実行して検証');
 const require = createRequire(import.meta.url);
 const core = script.slice(0, script.indexOf('/* ===== HTML パーツ ===== */')).replace("'use strict';", '');
 const tmp = path.join(ROOT, 'tools', '.app-core.cjs');
-writeFileSync(tmp, core + '\nmodule.exports={GAMES,parseImport,parseJson,normDate,score,comb,hyperP,deepAnalyze,backtest,analyze,makeTicket};');
+writeFileSync(tmp, core + '\nmodule.exports={GAMES,parseImport,parseJson,normDate,score,comb,hyperP,deepAnalyze,backtest,analyze,makeTicket,diagnose};');
 const A = require(tmp);
 const L6 = A.GAMES.loto6, L7 = A.GAMES.loto7;
 
@@ -99,7 +99,39 @@ console.log('\n[6] バックテスト（公正な乱数では全戦略が理論�
   ok('データ不足時はエラー', !!A.backtest(mk(10), L6, 50).error);
 }
 
-console.log('\n[7] 詳細分析');
+console.log('\n[7] 組み合わせの診断');
+{
+  // 既知の履歴を作り、診断結果が算術的に正しいか確かめる
+  const draws = [
+    { id:'a', round:101, date:'2026-01-06', numbers:[1,2,3,4,5,6],    bonus:[7] },
+    { id:'b', round:102, date:'2026-01-13', numbers:[1,2,3,10,11,12], bonus:[8] },
+    { id:'c', round:103, date:'2026-01-20', numbers:[1,20,21,22,23,24],bonus:[9] },
+    { id:'d', round:104, date:'2026-01-27', numbers:[30,31,32,33,34,35],bonus:[1] },
+    { id:'e', round:105, date:'2026-02-03', numbers:[1,2,3,4,5,6],    bonus:[7] },
+  ];
+  const g = A.diagnose([1,2,3,4,5,6], draws, L6);
+  eq('履歴件数', g.N, 5);
+  eq('番号1の出現回数', g.per.find(x=>x.n===1).count, 4);
+  eq('番号1は前回も出た(0回前)', g.per.find(x=>x.n===1).gap, 0);
+  eq('番号4の出現回数', g.per.find(x=>x.n===4).count, 2);
+  eq('番号4は4回前が最後', g.per.find(x=>x.n===4).gap, 0);
+  eq('番号6の最終出現は第105回', g.per.find(x=>x.n===6).last.round, 105);
+  eq('一致数の分布', g.dist, [1,1,0,1,0,0,2]);   // 6個一致2回, 3個一致1回, 1個一致1回, 0個一致1回
+  eq('最高一致は6個', g.bestM, 6);
+  eq('完全一致は2回', g.exact.length, 2);
+  eq('3個以上一致した回', g.hit3Obs, 3);
+  eq('合計値', g.sum, 21);
+  eq('奇数の個数', g.odd, 3);
+  eq('連番の組数', g.consec, 5);
+  const p12 = g.pairs.find(x=>x.a===1&&x.b===2);
+  eq('ペア1-2の共起', p12.c, 3);               // 第101,102,105回
+  const p56 = g.pairs.find(x=>x.a===5&&x.b===6);
+  eq('ペア5-6の共起', p56.c, 2);               // 第101,105回
+  ok('近かった回は一致数の多い順', g.matches[0].hit.length >= g.matches[g.matches.length-1].hit.length);
+  eq('未出現の番号は gap=-1', A.diagnose([1,2,3,4,5,43], draws, L6).per.find(x=>x.n===43).gap, -1);
+}
+
+console.log('\n[8] 詳細分析');
 {
   const d = A.deepAnalyze(Array.from({ length: 120 }, (_, i) => {
     const p = [...Array(43)].map((_, k) => k + 1);
