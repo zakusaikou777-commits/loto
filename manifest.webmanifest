@@ -1,12 +1,20 @@
 {
-  "name": "loto-lab-updater",
-  "private": true,
-  "type": "module",
-  "description": "みずほ銀行の当せん番号CSVを取得して data/*.json を更新する",
-  "scripts": {
-    "update": "node update-loto.mjs",
-    "update:dry": "node update-loto.mjs --dry-run",
-    "test": "node test-parser.mjs && node test-app.mjs"
-  },
-  "devDependencies": { "playwright": "^1.47.0" }
+  "id": "/loto-lab/",
+  "name": "宝くじ分析ラボ",
+  "short_name": "宝くじラボ",
+  "description": "ロト6・ロト7の出現傾向の可視化と番号ジェネレーター",
+  "lang": "ja",
+  "dir": "ltr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c0b10",
+  "theme_color": "#0c0b10",
+  "categories": ["utilities", "entertainment"],
+  "icons": [
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
 }
