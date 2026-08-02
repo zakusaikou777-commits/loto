@@ -1,1 +1,122 @@
+name: 当せん番号の自動更新
 
+on:
+  schedule:
+    # 日本時間 火・金 の 08:10 = UTC 月・木 23:10
+    - cron: '10 23 * * 1,4'
+    # 保険としてもう1本（日本時間 水・土 の 08:10）
+    - cron: '10 23 * * 2,5'
+  workflow_dispatch:
+    inputs:
+      back:
+        description: '過去にさかのぼる回数（通常は 0 / 公開分を全部取るなら 3000）'
+        required: false
+        default: '0'
+      limit:
+        description: '1回の実行で取得する上限（全部取るなら 3000）'
+        required: false
+        default: '150'
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: update-loto
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      # 何が置かれているかを最初に出しておく（失敗時の切り分け用）
+      - name: リポジトリの中身を確認
+        run: |
+          echo "--- ルート ---"
+          ls -la
+          echo "--- tools/ ---"
+          ls -la tools 2>/dev/null || echo "(tools/ がありません)"
+          echo "--- data/ ---"
+          ls -la data 2>/dev/null || echo "(data/ がありません)"
+          if [ ! -f tools/update-loto.mjs ]; then
+            echo "::error::tools/update-loto.mjs がリポジトリにありません。"
+            exit 1
+          fi
+
+      - name: 取得前の件数
+        run: |
+          for g in loto6 loto7; do
+            if [ -f "data/$g.json" ]; then
+              node -e "var d=require('./data/$g.json');console.log('$g: '+d.count+'件 / 最新 第'+d.latestRound+'回')"
+            fi
+          done
+
+      # まずは追加インストールなしで取得を試す
+      - name: 当せん番号を取得
+        id: fetch
+        continue-on-error: true
+        run: node tools/update-loto.mjs --back ${{ inputs.back || '0' }} --limit ${{ inputs.limit || '150' }}
+
+      # 上が失敗したときだけ、実ブラウザを入れて再試行する
+      - name: 失敗したら Playwright で再試行
+        if: steps.fetch.outcome == 'failure'
+        run: |
+          echo "通常の取得に失敗したため、ブラウザ経由で再試行します"
+          npm init -y >/dev/null 2>&1 || true
+          npm i -D playwright@latest
+          npx playwright install --with-deps chromium
+          node tools/update-loto.mjs --back ${{ inputs.back || '0' }} --limit ${{ inputs.limit || '150' }}
+
+      - name: 取得後の件数
+        run: |
+          for g in loto6 loto7; do
+            if [ -f "data/$g.json" ]; then
+              node -e "var d=require('./data/$g.json');console.log('$g: '+d.count+'件 / 最新 第'+d.latestRound+'回')"
+            fi
+          done
+
+      - name: 変更があればコミット
+        run: |
+          if [ -z "$(git status --porcelain data/)" ]; then
+            echo "変更なし。コミットしません。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git commit -m "chore(data): 当せん番号を更新"
+          git push
+
+      # 取得に失敗したら気づけるように Issue を立てる
+      - name: 失敗を通知
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '当せん番号の自動更新に失敗しました';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'auto-update'
+            });
+            const body = 'ワークフローが失敗しました。\n\n'
+              + 'ログ: ' + context.serverUrl + '/' + context.repo.owner + '/'
+              + context.repo.repo + '/actions/runs/' + context.runId + '\n\n'
+              + '※ data/ は変更していないため、アプリは直前のデータのまま動作します。';
+            if (issues.some(i => i.title === title)) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issues.find(i => i.title === title).number, body
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['auto-update']
+              });
+            }
