@@ -366,17 +366,28 @@ function mergeDraws(oldDraws, newDraws) {
 /* ---------- メイン ---------- */
 
 /** 同時実行数を絞って順に処理する（相手サーバーに負担をかけないため） */
-async function mapLimit(items, limit, fn) {
+async function mapLimit(items, limit, fn, opts = {}) {
+  const gap = opts.gap ?? 120;
+  const onProgress = opts.onProgress;
   const out = new Array(items.length);
-  let i = 0;
+  let i = 0, done = 0;
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (i < items.length) {
       const k = i++;
       out[k] = await fn(items[k], k);
-      await sleep(120);
+      done++;
+      if (onProgress && done % 100 === 0) onProgress(done, items.length);
+      await sleep(gap);
     }
   }));
   return out;
+}
+
+/** 件数が多いほど遠慮がちに取りに行く。数千件を全力で叩かないための調整。 */
+function pace(count) {
+  if (count > 1000) return { conc: 3, gap: 250 };
+  if (count > 300)  return { conc: 3, gap: 180 };
+  return { conc: 4, gap: 120 };
 }
 
 async function updateGame(cfg, opts) {
@@ -424,11 +435,14 @@ async function updateGame(cfg, opts) {
     console.log(`  すでに最新です（手元 ${prevDraws.length}回 / 最新 第${latestRound}回）`);
     return { added: 0, updated: 0 };
   }
-  console.log(`  未取得 ${targets.length}回 を取得します…`);
+  const pc = pace(targets.length);
+  const estSec = Math.round(targets.length / pc.conc * (pc.gap + 250) / 1000);
+  console.log(`  未取得 ${targets.length}回 を取得します…`
+            + `（同時${pc.conc}件 / 間隔${pc.gap}ms / 目安 約${Math.max(1, Math.round(estSec / 60))}分）`);
 
   // 3) 回別CSVを取りに行く
   let okCount = 0, ngCount = 0, miss = 0, stopped = false;
-  const fetched = await mapLimit(targets, 4, async (r) => {
+  const fetched = await mapLimit(targets, pc.conc, async (r) => {
     if (stopped) return null;
     try {
       const { text } = await fetchCsv(cfg.roundUrl(r));
@@ -445,7 +459,7 @@ async function updateGame(cfg, opts) {
       }
       return null;
     }
-  });
+  }, { gap: pc.gap, onProgress: (d, t) => console.log(`    …${d}/${t}回 処理（取得成功 ${okCount}）`) });
   const got = fetched.filter(Boolean);
   console.log(`  取得成功 ${okCount}回 / 失敗・欠番 ${ngCount}回`);
 
