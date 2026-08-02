@@ -36,9 +36,17 @@ zip を展開した `loto-lab-pwa` フォルダの**中身**をドラッグ&ド�
 
 ```
 index.html   sw.js   manifest.webmanifest   icon-192.png   icon-512.png
+.nojekyll    ← 重要（後述）
 data/  （フォルダごと）
 tools/ （フォルダごと）
 ```
+
+> **`.nojekyll` は必ず入れてください。** 空のファイルですが、これが無いと
+> GitHub Pages は Jekyll というブログ生成ツールを通してサイトを組み立てようとし、
+> 失敗するとサイト全体が404になります。このファイルを置くと Jekyll を完全に
+> バイパスし、ファイルをそのまま配信します。ドット始まりで見えない場合は、
+> 手順3と同じ **Add file → Create new file** でファイル名に `.nojekyll` と
+> 入力し、中身は空のまま Commit すれば作れます。
 
 **フォルダごとではなく中身を置いてください。**
 `loto-lab-pwa` フォルダごと入れると URL が
