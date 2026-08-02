@@ -60,24 +60,28 @@ export function normDate(s) {
 const isInt = (c) => /^\d+$/.test(c);
 
 function splitCells(line) {
-  const out = [];
-  let cur = '', q = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (q) {
-      if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; }
-      else cur += ch;
-    } else if (ch === '"') q = true;
-    else if (ch === ',' || ch === '\t' || ch === ';') { out.push(cur); cur = ''; }
-    else cur += ch;
+  const raw=[]; let cur='',q=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(q){ if(ch==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=ch; }
+    else if(ch==='"') q=true;
+    else if(ch===','||ch==='\t'||ch===';') { raw.push(cur); cur=''; }
+    else cur+=ch;
   }
-  out.push(cur);
-  // 全角数字を半角化し、空白を除去
-  return out.map((c) => c.replace(/\s+/g, '').replace(/[０-９]/g, (d) => String.fromCharCode(d.charCodeAt(0) - 0xfee0)));
+  raw.push(cur);
+  const out=[];
+  for(let c of raw){
+    c=c.replace(/[０-９]/g,d=>String.fromCharCode(d.charCodeAt(0)-0xFEE0)).replace(/　/g,' ').trim();
+    // 「03 11 19 25 31 40」のように1セルへ空白区切りで数字が入っている形式に対応する。
+    // ここで空白ごと削るとひと続きの巨大な数値になり、1件も解釈できなくなる。
+    if(/^\d+(?:[ \t]+\d+)+$/.test(c)) { for(const t of c.split(/[ \t]+/)) out.push(t); }
+    else out.push(c.replace(/[ \t]+/g,''));
+  }
+  return out;
 }
 
 export function parseCsv(text, cfg) {
-  const rows = text.split(/\r?\n/).filter((l) => l.trim()).map(splitCells);
+  const rows = text.split(/\r\n|\r|\n/).filter((l) => l.trim()).map(splitCells);
   if (!rows.length) return { draws: [], blockLen: 0 };
   const W = Math.max(...rows.map((r) => r.length));
   if (W < cfg.pick) return { draws: [], blockLen: 0 };
@@ -270,7 +274,14 @@ async function updateGame(cfg, dryRun) {
   console.log(`  取得: ${via} / ${text.length} 文字 → ${parsed.draws.length} 件を解釈`
             + ` (本数字ブロック長 ${parsed.blockLen}, 日付列 ${parsed.dateCol}, 回号列 ${parsed.roundCol})`);
 
-  if (!parsed.draws.length) throw new Error(`${cfg.name}: CSVから1件も解釈できませんでした。列の形式が変わった可能性があります`);
+  if (!parsed.draws.length) {
+    const lines = text.split(/\r\n|\r|\n/).filter((l) => l.trim());
+    console.log(`  取得したCSVの先頭3行（診断用）:`);
+    lines.slice(0, 3).forEach((l, i) => console.log(`    [${i + 1}] ${l}`));
+    console.log(`  1行目をセルに分解: ${JSON.stringify(splitCells(lines[0] || ''))}`);
+    console.log(`  総行数: ${lines.length}`);
+    throw new Error(`${cfg.name}: CSVから1件も解釈できませんでした。列の形式が変わった可能性があります`);
+  }
 
   const withoutDate = parsed.draws.filter((d) => !d.date).length;
   if (withoutDate > parsed.draws.length * 0.5)
