@@ -381,7 +381,9 @@ async function mapLimit(items, limit, fn) {
 
 async function updateGame(cfg, opts) {
   console.log(`\n== ${cfg.name} ==`);
-  const out = path.join(DATA_DIR, `${cfg.key}.json`);
+  // 出力先はテストから差し替えられるようにしておく（本物の data/ を壊さないため）
+  const dataDir = opts.dataDir || DATA_DIR;
+  const out = path.join(dataDir, `${cfg.key}.json`);
 
   let prev = { draws: [] };
   if (existsSync(out)) {
@@ -405,9 +407,16 @@ async function updateGame(cfg, opts) {
   const have = new Set(prevDraws.map((d) => d.round).filter((r) => Number.isInteger(r)));
   const dateOf = new Map(index.map((x) => [x.round, x.date]));
   let wanted = index.map((x) => x.round);
-  // --back N で目次より古い回もさかのぼる
+  // --back N で過去にさかのぼる。
+  // 起点は「目次の最古」と「手元にある最古」の、より古いほう。
+  // こうすると同じ --back を繰り返すたびに、さらに過去へ進んでいく。
   if (opts.back > 0) {
-    for (let r = oldestInIndex - 1; r >= Math.max(1, oldestInIndex - opts.back); r--) wanted.push(r);
+    const haveRounds = [...have];
+    const oldestHave = haveRounds.length ? Math.min(...haveRounds) : oldestInIndex;
+    const from = Math.min(oldestInIndex, oldestHave);
+    const to = Math.max(1, from - opts.back);
+    for (let r = from - 1; r >= to; r--) wanted.push(r);
+    console.log(`  さかのぼり: 第${to}回 〜 第${from - 1}回 を対象に加えます`);
   }
   const targets = wanted.filter((r) => !have.has(r)).sort((a, b) => b - a).slice(0, opts.limit);
 
@@ -418,23 +427,37 @@ async function updateGame(cfg, opts) {
   console.log(`  未取得 ${targets.length}回 を取得します…`);
 
   // 3) 回別CSVを取りに行く
-  let okCount = 0, ngCount = 0;
+  let okCount = 0, ngCount = 0, miss = 0, stopped = false;
   const fetched = await mapLimit(targets, 4, async (r) => {
+    if (stopped) return null;
     try {
       const { text } = await fetchCsv(cfg.roundUrl(r));
       const d = parseRound(text, cfg);
       if (!d) { ngCount++; return null; }
-      okCount++;
+      okCount++; miss = 0;
       return { round: r, date: d.date || dateOf.get(r) || '', numbers: d.numbers, bonus: d.bonus };
     } catch (e) {
       ngCount++;
+      // 公開されていない回が続いたら、それ以上さかのぼっても無駄なので打ち切る
+      if (e instanceof HttpError && e.status === 404 && ++miss >= 30 && !stopped) {
+        stopped = true;
+        console.log('  ! 存在しない回が30回続いたため、これ以上さかのぼるのを打ち切りました');
+      }
       return null;
     }
   });
   const got = fetched.filter(Boolean);
   console.log(`  取得成功 ${okCount}回 / 失敗・欠番 ${ngCount}回`);
 
-  if (!got.length) throw new Error(`${cfg.name}: 回別CSVを1件も取得できませんでした`);
+  if (!got.length) {
+    // すでにデータを持っているなら「新しく取れる回が無かった」だけ。失敗ではない。
+    // （さかのぼり切ったあとに再実行したときに、ここで落とすとIssueが立ってしまう）
+    if (prevDraws.length) {
+      console.log('  新しく取得できた回はありませんでした（これ以上さかのぼれない可能性があります）');
+      return { added: 0, updated: 0 };
+    }
+    throw new Error(`${cfg.name}: 回別CSVを1件も取得できませんでした`);
+  }
 
   const withoutDate = got.filter((d) => !d.date).length;
   if (withoutDate > got.length * 0.5)
@@ -464,7 +487,7 @@ async function updateGame(cfg, opts) {
     console.log(`  ※ 1回の実行では最大${opts.limit}件までにしています。残りは次回の実行で取得します。`);
 
   if (opts.dryRun) { console.log('  (dry-run のため書き込みませんでした)'); return { added, updated }; }
-  await mkdir(DATA_DIR, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
   await writeFile(out, JSON.stringify(payload) + '\n', 'utf8');
   console.log(`  → ${path.relative(ROOT, out)} を更新`);
   return { added, updated };

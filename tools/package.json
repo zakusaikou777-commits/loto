@@ -6,7 +6,7 @@
   "scripts": {
     "update": "node update-loto.mjs",
     "update:dry": "node update-loto.mjs --dry-run",
-    "test": "node test-parser.mjs && node test-app.mjs && node test-fetch.mjs"
+    "test": "node test-parser.mjs && node test-app.mjs && node test-fetch.mjs && node test-backfill.mjs"
   },
   "devDependencies": { "playwright": "^1.47.0" }
 }

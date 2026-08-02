@@ -334,7 +334,7 @@ function bestResult(tk,draws,cfg){
 let state={game:'loto6',store:{loto6:[],loto7:[]},tickets:{loto6:[],loto7:[]},tab:'analysis',
   sel:[],bsel:[],tsel:[],showBonus:false,date:todayISO(),strategy:'random',sets:[],excludePast:false,
   importMode:'merge',showNote:true,flash:'',pasteText:'',anaView:'basic',edit:null,bt:null,btRunning:false,
-  autoSync:true,syncing:false,syncInfo:{loto6:null,loto7:null},lastWarn:''};
+  autoSync:true,syncing:false,syncInfo:{loto6:null,loto7:null},lastWarn:'',syncError:''};
 
 const LS={d6:'lotolab-loto6',d7:'lotolab-loto7',t6:'lotolab-tk-loto6',t7:'lotolab-tk-loto7',
   meta:'lotolab-meta'};
@@ -623,17 +623,35 @@ async function syncRemote(opts){
   state.syncing=true; if(!opts.silent)render();
   try{
     const res=await fetch('./data/'+cfg.key+'.json',{cache:'no-store'});
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const j=await res.json();
+    if(res.status===404) throw new Error('notfound');
+    if(!res.ok) throw new Error('http:'+res.status);
+    let j;
+    try{ j=await res.json(); }catch(e){ throw new Error('badjson'); }
     const parsed=parseJson(JSON.stringify(j.draws||j),cfg);
-    if(!parsed||!parsed.draws.length) throw new Error('empty');
+    // ファイルはあるが中身が空 ＝ 更新ワークフローがまだ動いていない。
+    // 「未配置」と混同すると原因が分からなくなるので区別する。
+    if(!parsed||!parsed.draws.length) throw new Error('emptyfile');
     const added=mergeDraws(gameKey,parsed.draws);
     state.syncInfo[gameKey]={updated:j.updated||'',latest:j.latestRound||null,total:parsed.draws.length,at:new Date().toISOString()};
+    state.syncError='';
     save();
     if(!opts.silent) flash(added?added+'件の新しい抽せん結果を取り込みました':'すでに最新です');
     else if(added){ state.flash='最新の'+cfg.name+'結果を'+added+'件追加しました'; clearTimeout(_ft); _ft=setTimeout(()=>{state.flash='';render();},2800); }
   }catch(e){
-    if(!opts.silent) flash('最新データを取得できませんでした（data/'+cfg.key+'.json が未配置か、オフラインです）');
+    const m=String((e&&e.message)||'');
+    let msg;
+    if(m==='notfound')
+      msg='配信データ data/'+cfg.key+'.json が見つかりません。ファイルがアップロードされているか確認してください。';
+    else if(m==='emptyfile')
+      msg='配信データはまだ空です。GitHub の Actions タブで「当せん番号の自動更新」を実行すると当せん番号が入ります。';
+    else if(m==='badjson')
+      msg='配信データの形式が壊れています（JSONとして読めません）。';
+    else if(typeof navigator!=='undefined' && navigator.onLine===false)
+      msg='オフラインのため取得できません。通信できる状態で再度お試しください。';
+    else
+      msg='最新データを取得できませんでした（'+m+'）。';
+    state.syncError=msg;
+    if(!opts.silent) flash(msg);
   }finally{
     state.syncing=false; render();
   }
@@ -858,7 +876,8 @@ function randomnessHTML(a,cfg){
 }
 
 function emptyHTML(){
-  return '<div class="empty"><div class="empty-mark">籤</div><h3>分析するデータがありません</h3><p>最新の当せん結果を取得するか、CSVを取り込むと分析が始まります。</p><div class="empty-btns"><button class="primary" data-action="sync">最新結果を取得</button><button class="ghostbtn" data-action="tab" data-tab="data">データを追加</button><button class="minighost" data-action="seedDemo">デモで試す</button></div></div>';
+  const err=state.syncError?'<div class="warnbox" style="margin-bottom:14px;text-align:left">'+esc(state.syncError)+'</div>':'';
+  return err+'<div class="empty"><div class="empty-mark">籤</div><h3>分析するデータがありません</h3><p>最新の当せん結果を取得するか、CSVを取り込むと分析が始まります。</p><div class="empty-btns"><button class="primary" data-action="sync">最新結果を取得</button><button class="ghostbtn" data-action="tab" data-tab="data">データを追加</button><button class="minighost" data-action="seedDemo">デモで試す</button></div></div>';
 }
 
 function renderAnalysis(){
@@ -1169,8 +1188,9 @@ function syncCardHTML(cfg){
   let txt;
   if(info) txt='配信データ更新日 <b>'+esc(info.updated||'不明')+'</b>'+(info.latest?'（最新 第'+info.latest+'回）':'')+'<br>収録 '+info.total+'回分 / 最終確認 '+esc(String(info.at).slice(0,16).replace('T',' '));
   else txt='まだ取得していません。<code>data/'+cfg.key+'.json</code> が公開されていれば、ボタン一つで最新の当せん結果を追記します。';
+  const err=state.syncError?'<div class="warnbox">'+esc(state.syncError)+'</div>':'';
   return card('最新の当せん結果を取得','GitHub Actions が定期更新する data/'+cfg.key+'.json を読み込みます（重複は自動スキップ）',
-    '<div class="syncbar">'+btn+auto+'</div><p class="syncinfo" style="margin-top:12px">'+txt+'</p>');
+    '<div class="syncbar">'+btn+auto+'</div><p class="syncinfo" style="margin-top:12px">'+txt+'</p>'+err);
 }
 
 /* 履歴の編集フォーム。行をその場で置き換える */
