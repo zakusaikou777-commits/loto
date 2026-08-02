@@ -1,0 +1,1 @@
+{"game":"loto7","name":"ロト7","updated":"","latestRound":null,"latestDate":"","count":0,"source":"https://www.mizuhobank.co.jp/retail/takarakuji/loto/loto7/csv/loto7.csv","note":"このファイルは tools/update-loto.mjs（GitHub Actions）が自動更新します。初回はワークフローを手動実行してください。","draws":[]}
