@@ -24,7 +24,7 @@ console.log('\n[1] 必要な関数が全て存在するか');
 const NEEDED = ['analyze', 'analyzeCached', 'deepAnalyze', 'backtest', 'makeTicket', 'generate',
   'renderAnalysis', 'renderGenerate', 'renderTickets', 'renderData', 'renderDeep', 'renderBacktest',
   'editBoxHTML', 'cmpRow', 'cmpRowSE', 'cmpLegend', 'verdict', 'parseTable', 'parseJson', 'parseImport',
-  'normDate', 'mergeDraws', 'syncRemote', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'render'];
+  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'render'];
 const missing = NEEDED.filter((n) => !new RegExp(`function ${n}\\b`).test(script));
 ok(`${NEEDED.length}個の関数が定義済み`, missing.length === 0, `未定義: ${missing.join(', ')}`);
 
@@ -60,6 +60,17 @@ eq('更新スクリプトと同じ結果', A.parseImport(csv, L6).draws.map((d) 
    parseCsv(csv, UGAMES.loto6).draws.map((d) => d.numbers));
 eq('和暦を読める', A.normDate('令和8年5月30日'), '2026-05-30');
 eq('JSONの重複番号を弾く', A.parseJson('[{"date":"2026-05-30","numbers":[5,5,5,5,5,5]}]', L6).draws.length, 0);
+{
+  // みずほの回別CSVをそのまま読ませても通るか
+  const mz = ['A52','第2124回ロト６,数字選択式全国自治宝くじ,令和8年7月30日,東京 宝くじドリーム館',
+    '支払期間,令和8年7月31日から令和9年7月30日まで',
+    '本数字,06,20,29,36,37,41,ボーナス数字,19','１等,該当なし,該当なし','販売実績額,1260775000円'].join('\r\n');
+  const r = A.parseImport(mz, L6);
+  eq('回別CSVの本数字', r.draws[0].numbers, [6,20,29,36,37,41]);
+  eq('回別CSVのボーナス', r.draws[0].bonus, [19]);
+  eq('回別CSVの回号', r.draws[0].round, 2124);
+  eq('回別CSVの日付', r.draws[0].date, '2026-07-30');
+}
 
 console.log('\n[5] 確率計算');
 eq('C(43,6)', Math.round(A.comb(43, 6)), 6096454);

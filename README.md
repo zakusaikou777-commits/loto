@@ -119,8 +119,9 @@ Android はメニュー →「アプリをインストール」。
 ## 自動更新の仕組み
 
 ```
-みずほ銀行 公式CSV
-  https://www.mizuhobank.co.jp/retail/takarakuji/loto/loto6/csv/loto6.csv
+① 目次CSV   .../loto6/csv/loto6.csv        回号と抽せん日の一覧（本数字は入っていない）
+        ↓  手元に無い回号だけを洗い出す
+② 回別CSV   .../loto6/csv/A1022124.CSV     「本数字,06,20,29,36,37,41,ボーナス数字,19」
         ↓  GitHub Actions（火・金・水・土 の朝8:10 JST）
   tools/update-loto.mjs が取得・解析・既存データとマージ
         ↓  変更があれば data/*.json をコミット
@@ -128,6 +129,11 @@ Android はメニュー →「アプリをインストール」。
         ↓  fetch('./data/loto6.json')  ← 同一オリジンなのでCORSの問題なし
   アプリが起動時に差分を取り込む
 ```
+
+みずほの配信は2段構成です。`loto6.csv` は**回号と抽せん日の目次**で、本数字は含みません。
+本数字は回ごとの `A102{回号4桁}.CSV`（ロト7は `A103{回号4桁}.CSV`）にあります。
+そのため目次で回号を把握し、**手元に無い回だけ**を回別CSVから取りに行きます。
+2回目以降の実行は新しい1〜2回分だけなので、20秒ほどで終わります。
 
 **なぜアプリから直接みずほを読まないのか**
 
@@ -141,9 +147,12 @@ Android はメニュー →「アプリをインストール」。
 
 次のいずれかに当てはまると、スクリプトは `data/` を書き換えずに終了コード1で失敗します。
 
-- CSVから1件も解釈できなかった（＝みずほ側の形式変更の可能性）
-- 半数以上の行で抽せん日を読み取れなかった
+- 目次CSVから回号を1件も読み取れなかった（＝みずほ側の形式変更の可能性）
+- 回別CSVを1件も取得できなかった
+- 半数以上の回で抽せん日を読み取れなかった
 - マージ後の件数が既存より減った
+
+失敗時は取得した生データの先頭数行をログに出すので、形式が変わった場合も原因がすぐ分かります。
 
 失敗時は自動で Issue が立つので気づけます。アプリは直前のデータのまま動き続けます。
 
@@ -159,9 +168,12 @@ npx playwright install chromium
 node update-loto.mjs --dry-run # 書き込まずに動作確認
 node update-loto.mjs           # data/*.json を更新
 node update-loto.mjs loto6     # ロト6だけ
+node update-loto.mjs --limit 30   # 1回の実行で取りに行く上限（既定150）
+node update-loto.mjs --back 200   # 目次より古い回もさかのぼって取得
 
-node test-parser.mjs           # 取り込みパーサの回帰テスト（35件）
-node test-app.mjs              # index.html のロジック検証（28件）
+node test-parser.mjs           # 取り込みパーサの回帰テスト（61件）
+node test-app.mjs              # index.html のロジック検証（32件）
+node test-fetch.mjs            # 取得フロー全体の検証・通信はモック（9件）
 ```
 
 アプリの動作確認は、`file://` ではなく HTTP サーバー経由で開いてください

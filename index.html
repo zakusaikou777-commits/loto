@@ -512,9 +512,36 @@ function parseJson(text,cfg){
   return {draws,blockLen:cfg.pick,noDate,hasDate:true,hasRound:draws.some(d=>d.round!=null)};
 }
 
+/* みずほの回別CSV（本数字,06,20,29,36,37,41,ボーナス数字,19）にも対応する。
+   利用者が公式サイトから落としたファイルをそのまま読ませても通るように。 */
+function parseMizuhoRounds(text,cfg){
+  const lines=text.split(/\r\n|\r|\n/);
+  const draws=[]; let cur=null;
+  for(const line of lines){
+    const z=line.replace(/[０-９]/g,d=>String.fromCharCode(d.charCodeAt(0)-0xFEE0));
+    const m=z.match(/第\s*(\d+)\s*回/);
+    if(m) cur={round:+m[1],date:normDate(line)};
+    if(!/本数字/.test(z)) continue;
+    const cells=z.split(',').map(c=>c.trim());
+    const bIdx=cells.findIndex(c=>/ボーナス/.test(c));
+    const nums=[],bon=[];
+    cells.forEach((c,i)=>{
+      if(!/^\d+$/.test(c))return; const v=+c; if(v<1||v>cfg.max)return;
+      if(bIdx>=0&&i>bIdx)bon.push(v); else nums.push(v);
+    });
+    if(nums.length!==cfg.pick||new Set(nums).size!==cfg.pick) continue;
+    draws.push({round:cur?cur.round:null,date:cur?cur.date:'',
+      numbers:[...nums].sort((a,b)=>a-b),
+      bonus:[...new Set(bon)].filter(b=>!nums.includes(b)).slice(0,cfg.bonus).sort((a,b)=>a-b)});
+  }
+  if(!draws.length) return null;
+  return {draws,blockLen:cfg.pick+cfg.bonus,noDate:draws.filter(d=>!d.date).length,hasDate:true,hasRound:true};
+}
+
 function parseImport(text,cfg){
   const t=String(text||'').trim(); if(!t)return null;
   if(t[0]==='['||t[0]==='{'){ const j=parseJson(t,cfg); if(j&&j.draws.length)return j; }
+  const mz=parseMizuhoRounds(t,cfg); if(mz) return mz;
   return parseTable(t,cfg);
 }
 /* 取り込み品質のスコア。ゲーム取り違えの検出に使う */
