@@ -2,14 +2,13 @@ name: 当せん番号の自動更新
 
 on:
   schedule:
-    # 日本時間 火・金 の 08:10 = UTC 月・木 23:10
     - cron: '10 23 * * 1,4'
-    # 保険としてもう1本（日本時間 水・土 の 08:10）
     - cron: '10 23 * * 2,5'
-  workflow_dispatch:        # 手動でも実行できる
+  workflow_dispatch:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: update-loto
@@ -19,21 +18,41 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '22'
 
-      # 素の fetch が Akamai に弾かれたときのフォールバック用
-      - name: Playwright を用意
+      # 何が置かれているかを最初に出しておく（失敗時の切り分け用）
+      - name: リポジトリの中身を確認
         run: |
+          echo "--- ルート ---"
+          ls -la
+          echo "--- tools/ ---"
+          ls -la tools 2>/dev/null || echo "(tools/ がありません)"
+          echo "--- data/ ---"
+          ls -la data 2>/dev/null || echo "(data/ がありません)"
+          if [ ! -f tools/update-loto.mjs ]; then
+            echo "::error::tools/update-loto.mjs がリポジトリにありません。"
+            exit 1
+          fi
+
+      # まずは追加インストールなしで取得を試す
+      - name: 当せん番号を取得
+        id: fetch
+        continue-on-error: true
+        run: node tools/update-loto.mjs
+
+      # 上が失敗したときだけ、実ブラウザを入れて再試行する
+      - name: 失敗したら Playwright で再試行
+        if: steps.fetch.outcome == 'failure'
+        run: |
+          echo "通常の取得に失敗したため、ブラウザ経由で再試行します"
           npm init -y >/dev/null 2>&1 || true
           npm i -D playwright@latest
           npx playwright install --with-deps chromium
-
-      - name: 最新の当せん番号を取得
-        run: node tools/update-loto.mjs
+          node tools/update-loto.mjs
 
       - name: 変更があればコミット
         run: |
