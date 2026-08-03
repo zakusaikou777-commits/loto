@@ -24,7 +24,7 @@ console.log('\n[1] 必要な関数が全て存在するか');
 const NEEDED = ['analyze', 'analyzeCached', 'deepAnalyze', 'backtest', 'makeTicket', 'generate',
   'renderAnalysis', 'renderGenerate', 'renderTickets', 'renderData', 'renderDeep', 'renderBacktest',
   'editBoxHTML', 'cmpRow', 'cmpRowSE', 'cmpLegend', 'verdict', 'parseTable', 'parseJson', 'parseImport',
-  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'diagnose', 'renderDiagnosis', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'render'];
+  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'diagnose', 'renderDiagnosis', 'similarSearch', 'shapeOf', 'simFilterSort', 'renderSimilar', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'render'];
 const missing = NEEDED.filter((n) => !new RegExp(`function ${n}\\b`).test(script));
 ok(`${NEEDED.length}個の関数が定義済み`, missing.length === 0, `未定義: ${missing.join(', ')}`);
 
@@ -49,7 +49,7 @@ console.log('\n[4] アプリのパーサを実行して検証');
 const require = createRequire(import.meta.url);
 const core = script.slice(0, script.indexOf('/* ===== HTML パーツ ===== */')).replace("'use strict';", '');
 const tmp = path.join(ROOT, 'tools', '.app-core.cjs');
-writeFileSync(tmp, core + '\nmodule.exports={GAMES,parseImport,parseJson,normDate,score,comb,hyperP,deepAnalyze,backtest,analyze,makeTicket,diagnose};');
+writeFileSync(tmp, core + '\nmodule.exports={GAMES,parseImport,parseJson,normDate,score,comb,hyperP,deepAnalyze,backtest,analyze,makeTicket,diagnose,similarSearch,shapeOf,simFilterSort};');
 const A = require(tmp);
 const L6 = A.GAMES.loto6, L7 = A.GAMES.loto7;
 
@@ -131,7 +131,74 @@ console.log('\n[7] 組み合わせの診断');
   eq('未出現の番号は gap=-1', A.diagnose([1,2,3,4,5,43], draws, L6).per.find(x=>x.n===43).gap, -1);
 }
 
-console.log('\n[8] 詳細分析');
+console.log('\n[8] 似た回の検索');
+{
+  // 1,600回ぶんの公正な乱数を用意して、実運用に近い規模で確かめる
+  const mk = (n) => Array.from({ length: n }, (_, i) => {
+    const p = [...Array(43)].map((_, k) => k + 1);
+    for (let k = p.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [p[k], p[j]] = [p[j], p[k]]; }
+    return { id: 's' + i, round: 500 + i, date: '2026-01-01', numbers: p.slice(0, 6).sort((a, b) => a - b), bonus: [p[6]] };
+  });
+  const draws = mk(1600);
+  const target = [3, 11, 19, 25, 31, 40];
+  const res = A.similarSearch(target, draws, L6, {});
+  eq('全件が対象になる', res.N, 1600);
+
+  // パーセンタイルの定義どおりか（上位5%で絞ると実際に約5%残る）
+  for (const th of [1, 5, 10]) {
+    const kept = res.rows.filter(r => r.pct <= th).length;
+    const want = 1600 * th / 100;
+    ok(`上位${th}%で絞ると実際に約${th}%が残る`, Math.abs(kept - want) <= 2, `${kept}件 / 期待${want}件`);
+  }
+  ok('パーセンタイルは0より大きく100以下', res.rows.every(r => r.pct > 0 && r.pct <= 100));
+
+  // 形の近さ: 距離が小さいほどパーセンタイルが小さい
+  const sortedByDist = [...res.rows].sort((a, b) => a.dist - b.dist);
+  ok('距離順とパーセンタイル順が一致', sortedByDist.every((r, i) => i === 0 || r.pct >= sortedByDist[i - 1].pct));
+
+  // 起点と同じ形の回は距離0になる
+  const self = { id: 'self', round: 9999, date: '2026-09-01', numbers: target, bonus: [] };
+  const res2 = A.similarSearch(target, [...draws, self], L6, {});
+  const selfRow = res2.rows.find(r => r.d.id === 'self');
+  ok('自分と同じ組み合わせは距離0', Math.abs(selfRow.dist) < 1e-12, `dist=${selfRow.dist}`);
+  eq('自分と同じ組み合わせは6個一致', selfRow.m, 6);
+
+  // excludeId で起点そのものを除外できる
+  const res3 = A.similarSearch(target, [...draws, self], L6, { excludeId: 'self' });
+  ok('起点の回を一覧から除外できる', !res3.rows.some(r => r.d.id === 'self'));
+  eq('除外すると1件減る', res3.N, 1600);
+
+  // 絞り込みと並び替え
+  const all = A.simFilterSort(res, { match: 0, shape: 100, sort: 'match' });
+  eq('絞り込みなしは全件', all.length, 1600);
+  ok('一致数順に並ぶ', all.every((r, i) => i === 0 || all[i - 1].m >= r.m));
+  const byShape = A.simFilterSort(res, { match: 0, shape: 100, sort: 'shape' });
+  ok('形の近さ順に並ぶ', byShape.every((r, i) => i === 0 || byShape[i - 1].pct <= r.pct));
+  const m3 = A.simFilterSort(res, { match: 3, shape: 100, sort: 'match' });
+  ok('3個以上で絞ると全て3個以上', m3.every(r => r.m >= 3), `${m3.length}件`);
+  const both = A.simFilterSort(res, { match: 3, shape: 5, sort: 'match' });
+  ok('併用すると両方の条件を満たす', both.every(r => r.m >= 3 && r.pct <= 5), `${both.length}件`);
+  ok('併用は単独より件数が少ない', both.length <= m3.length);
+  const newest = A.simFilterSort(res, { match: 0, shape: 100, sort: 'new' });
+  ok('新しい順は回号が降順', newest[0].d.round > newest[newest.length - 1].d.round);
+  const oldest = A.simFilterSort(res, { match: 0, shape: 100, sort: 'old' });
+  ok('古い順は回号が昇順', oldest[0].d.round < oldest[oldest.length - 1].d.round);
+
+  // 形の指標そのもの
+  eq('形: 合計値', A.shapeOf([1,2,3,4,5,6], L6).sum, 21);
+  eq('形: 奇数の個数', A.shapeOf([1,2,3,4,5,6], L6).odd, 3);
+  eq('形: 低い数の個数', A.shapeOf([1,2,3,4,5,40], L6).low, 5);
+  eq('形: 連番の組数', A.shapeOf([1,2,3,10,20,30], L6).consec, 2);
+
+  // 3個以上一致の件数が理論値に近いか（1600回 × 2.717%）
+  let expHit3 = 0; for (let j = 3; j <= 6; j++) expHit3 += A.hyperP(L6, j);
+  const obs3 = res.rows.filter(r => r.m >= 3).length;
+  ok('3個以上一致の件数が理論値の近く', Math.abs(obs3 - 1600 * expHit3) < 4 * Math.sqrt(1600 * expHit3),
+     `実測${obs3}件 / 理論${(1600 * expHit3).toFixed(1)}件`);
+  console.log(`   1600回中: 3個以上一致 ${obs3}件（理論 ${(1600*expHit3).toFixed(1)}件）`);
+}
+
+console.log('\n[9] 詳細分析');
 {
   const d = A.deepAnalyze(Array.from({ length: 120 }, (_, i) => {
     const p = [...Array(43)].map((_, k) => k + 1);

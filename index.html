@@ -197,6 +197,18 @@ html,body{margin:0;background:#0c0b10;-webkit-text-size-adjust:100%}
 .edit:hover{color:var(--gold2)}
 .btwrap{overflow-x:auto}
 .btoggle-row{margin:4px 0 12px}
+.nb{display:inline-grid;place-items:center;width:21px;height:21px;border-radius:50%;
+  font-family:var(--f-disp);font-weight:600;font-size:10px;line-height:1;
+  background:rgba(255,255,255,.06);color:#cfc9bd;border:1px solid rgba(255,255,255,.13)}
+.nb.hit{background:var(--gold);color:#1b1606;border-color:transparent;font-weight:700}
+.nbrow{display:flex;flex-wrap:wrap;gap:2px}
+.ptable td.whn{white-space:nowrap;padding-right:4px}
+.ptable td.whn b{display:block;font-family:var(--f-disp);font-size:11.5px;color:var(--gold2);opacity:.85;font-weight:600}
+.ptable td.whn span{display:block;font-size:10px;color:var(--mut);margin-top:1px}
+.ptable.simt td,.ptable.simt th{padding:6px 4px}
+.ptable.simt td.n{padding-left:2px}
+.ptable td.n.hi{color:var(--gold2);font-weight:700}
+.ptable td.n.pc{font-size:11px;color:var(--mut);white-space:nowrap}
 .pkb.on{background:radial-gradient(circle at 32% 28%,#7fc2db,#3f8aa6)!important;color:#06222c!important;border-color:transparent!important;box-shadow:0 3px 10px rgba(63,138,166,.35)!important}
 .bsep{color:var(--mut);align-self:center;margin:0 2px;font-weight:700}
 .modelbl{font-size:11.5px;color:var(--mut);align-self:center;margin-right:2px}
@@ -333,7 +345,7 @@ function bestResult(tk,draws,cfg){
 /* ===== 状態 ===== */
 let state={game:'loto6',store:{loto6:[],loto7:[]},tickets:{loto6:[],loto7:[]},tab:'analysis',
   sel:[],bsel:[],tsel:[],showBonus:false,date:todayISO(),strategy:'random',sets:[],excludePast:false,
-  importMode:'merge',showNote:true,flash:'',pasteText:'',anaView:'basic',edit:null,bt:null,btRunning:false,
+  importMode:'merge',showNote:true,flash:'',pasteText:'',anaView:'basic',edit:null,bt:null,btRunning:false,simSel:[],simMatch:0,simShape:100,simSort:'match',simLimit:200,simFrom:'',simExcludeId:'',
   autoSync:true,syncing:false,syncInfo:{loto6:null,loto7:null},lastWarn:'',syncError:''};
 
 const LS={d6:'lotolab-loto6',d7:'lotolab-loto7',t6:'lotolab-tk-loto6',t7:'lotolab-tk-loto7',
@@ -850,6 +862,65 @@ function diagnose(nums,draws,cfg){
     avgSum:a.sumStats?a.sumStats.avg:0,avgOdd:a.avgOdd,avgLow:a.avgLow};
 }
 
+/* ===== 似た回の検索 =====
+   2つの軸で「似ている」を測る。
+     ① 一致数   … 同じ数字が何個含まれるか
+     ② 形の近さ … 合計値・奇数の個数・低い数の個数・連番の組数 の4指標
+   4指標は単位がばらばら（合計値は21〜243、連番は0〜5）なので、
+   履歴全体の標準偏差で割って揃えてからユークリッド距離を取る。
+   距離をそのまま見せても分かりにくいので、全履歴での順位をパーセンタイルにする。 */
+function shapeOf(nums,cfg){
+  const s=[...nums].sort((a,b)=>a-b);
+  let consec=0; for(let i=1;i<s.length;i++) if(s[i]===s[i-1]+1) consec++;
+  return {
+    sum:s.reduce((a,b)=>a+b,0),
+    odd:s.filter(n=>n%2===1).length,
+    low:s.filter(n=>n<=cfg.max/2).length,
+    consec
+  };
+}
+function similarSearch(nums,draws,cfg,opts){
+  opts=opts||{};
+  const chrono=[...draws].sort(byChrono);
+  if(!chrono.length) return null;
+  const set=new Set(nums);
+  const shapes=chrono.map(d=>shapeOf(d.numbers,cfg));
+  // 正規化用の標準偏差。0のときは1にして0除算を避ける
+  const sdOf=k=>{
+    const v=shapes.map(x=>x[k]);
+    const m=v.reduce((a,b)=>a+b,0)/v.length;
+    const va=v.reduce((a,b)=>a+(b-m)*(b-m),0)/Math.max(1,v.length-1);
+    return Math.sqrt(va)||1;
+  };
+  const S={sum:sdOf('sum'),odd:sdOf('odd'),low:sdOf('low'),consec:sdOf('consec')};
+  const base=shapeOf(nums,cfg);
+  const rows=[];
+  chrono.forEach((d,i)=>{
+    if(opts.excludeId && d.id===opts.excludeId) return;   // 起点の回そのものは除く
+    const hit=d.numbers.filter(n=>set.has(n));
+    const sh=shapes[i];
+    const dz=(a,b,sd)=>{const t=(a-b)/sd;return t*t;};
+    const dist=Math.sqrt(dz(sh.sum,base.sum,S.sum)+dz(sh.odd,base.odd,S.odd)
+                        +dz(sh.low,base.low,S.low)+dz(sh.consec,base.consec,S.consec));
+    rows.push({d,hit,m:hit.length,dist,shape:sh});
+  });
+  // 距離が小さい順の順位 → パーセンタイル（1位がほぼ0%）
+  const byDist=[...rows].sort((a,b)=>a.dist-b.dist);
+  byDist.forEach((r,i)=>{ r.pct=(i+1)/byDist.length*100; });
+  return {rows,N:rows.length,base,sd:S};
+}
+function simFilterSort(res,st){
+  let rows=res.rows;
+  if(st.match>0)   rows=rows.filter(r=>r.m>=st.match);
+  if(st.shape<100) rows=rows.filter(r=>r.pct<=st.shape);
+  const c=[...rows];
+  if(st.sort==='match')      c.sort((a,b)=>b.m-a.m||a.pct-b.pct);
+  else if(st.sort==='shape') c.sort((a,b)=>a.pct-b.pct||b.m-a.m);
+  else if(st.sort==='new')   c.sort((a,b)=>byChrono(b.d,a.d));
+  else                       c.sort((a,b)=>byChrono(a.d,b.d));
+  return c;
+}
+
 /* ===== HTML パーツ ===== */
 function ballHTML(n,tone,size=38){return '<span class="ball ball-'+tone+'" style="width:'+size+'px;height:'+size+'px;font-size:'+(size*0.42).toFixed(1)+'px">'+n+'</span>';}
 /* 出現頻度は「大きさ」の表現なので逐次ランプ（単一色相・明度単調）にする。
@@ -882,12 +953,13 @@ function emptyHTML(){
 
 function renderAnalysis(){
   const cfg=GAMES[state.game]; const a=analyzeCached(state.store[state.game],cfg);
-  if(a.count===0) return emptyHTML();
-  const V=[['basic','基本'],['deep','詳細'],['backtest','戦略の検証']];
+  if(a.count===0 && state.anaView!=='similar') return emptyHTML();
+  const V=[['basic','基本'],['deep','詳細'],['backtest','戦略の検証'],['similar','似た回']];
   let h='<div class="subnav">'+V.map(v=>'<button class="chip'+(state.anaView===v[0]?' on':'')
       +'" data-action="anaView" data-view="'+v[0]+'">'+v[1]+'</button>').join('')+'</div>';
   if(state.anaView==='deep') return h+renderDeep();
   if(state.anaView==='backtest') return h+renderBacktest();
+  if(state.anaView==='similar')  return h+renderSimilar();
   h+='<div class="lead"><b>'+a.count+'</b> 回分の'+cfg.name+'抽選結果を分析中</div>';
   if(a.noDate) h+='<div class="warnbox"><b>日付のない履歴が '+a.noDate+' 件あります。</b>「ご無沙汰番号」は抽せん日順に数えるため、これらは最も古い扱いになり結果が不正確になります。</div>';
   h+=randomnessHTML(a,cfg);
@@ -1095,7 +1167,9 @@ function renderDiagnosis(nums,cfg){
         +'<div class="tnums">'+balls+'</div>'
         +'<span class="tres '+(m.hit.length>=cfg.pick-1?'twin':'tmid')+'">'+m.hit.length+'個一致</span></div>';
     });
-    h+=card('近かった回','3個以上一致した回のうち上位'+g.matches.length+'件（金色が一致した数字）','<div class="tlist">'+ml+'</div>');
+    h+=card('近かった回','3個以上一致した回のうち上位'+g.matches.length+'件（金色が一致した数字）',
+      '<div class="tlist">'+ml+'</div>'
+      +'<div class="addrow" style="margin-top:12px"><button class="ghostbtn" data-action="simFromDiag">すべて見る（似た回の一覧へ）</button></div>');
   }
 
   // --- ペアの相性 ---
@@ -1122,6 +1196,86 @@ function renderDiagnosis(nums,cfg){
     +'<p class="rnote">平均から離れていても不利ではありません。合計値や奇偶は結果を見て集計しているだけで、'
     +'どの組み合わせも当せん確率は '+(1/comb(cfg.max,cfg.pick)).toExponential(2)+'（'
     +Math.round(comb(cfg.max,cfg.pick)).toLocaleString()+'分の1）で同じです。</p>');
+  return h;
+}
+
+function pctText(p){ return p<1 ? '上位 '+p.toFixed(1)+'%' : '上位 '+Math.ceil(p)+'%'; }
+
+function renderSimilar(){
+  const cfg=GAMES[state.game]; const draws=state.store[state.game];
+  const sel=[...state.simSel].sort((a,b)=>a-b);
+
+  // 起点の指定
+  let pk=''; for(let n=1;n<=cfg.max;n++){
+    const on=state.simSel.includes(n); const dis=!on&&state.simSel.length>=cfg.pick;
+    pk+='<button class="pk'+(on?' on':'')+'" data-action="simToggle" data-n="'+n+'"'+(dis?' disabled':'')+'>'+n+'</button>';
+  }
+  const hasTicket=state.tsel.length===cfg.pick;
+  const tools='<div class="addrow">'
+    +'<button class="minighost" data-action="simLoadSel"'+(hasTicket?'':' disabled')+'>マイ番号で選んだ番号を読み込む</button>'
+    +'<button class="minighost" data-action="simRandom">おまかせ</button>'
+    +'<button class="minighost" data-action="simClear">クリア</button></div>';
+  let h=card('比べたい番号を選ぶ',
+    (state.simFrom?'起点: '+esc(state.simFrom)+'（この回自身は一覧から除きます）'
+                  :'数字を '+cfg.pick+' 個タップ ('+state.simSel.length+'/'+cfg.pick+')　データタブの履歴の 🔍 からも指定できます'),
+    '<div class="picker">'+pk+'</div>'+tools);
+
+  if(draws.length<10) return h+'<div class="hintbox">似た回を探すには10回分以上の履歴が必要です（現在'+draws.length+'回）。</div>';
+  if(sel.length!==cfg.pick) return h+'<div class="hintbox">数字を '+cfg.pick+' 個そろえると、過去の全'+draws.length+'回から似た回を探して一覧にします。</div>';
+
+  const res=similarSearch(sel,draws,cfg,{excludeId:state.simExcludeId});
+  const rows=simFilterSort(res,{match:state.simMatch,shape:state.simShape,sort:state.simSort});
+
+  // 絞り込み・並び替え
+  const chip=(act,val,cur,label)=>'<button class="chip'+(String(cur)===String(val)?' on':'')
+    +'" data-action="'+act+'" data-v="'+val+'">'+label+'</button>';
+  const ctrl=
+     '<p class="muted small">一致数で絞る</p><div class="chiprow">'
+    +chip('simMatch',0,state.simMatch,'すべて')+chip('simMatch',3,state.simMatch,'3個以上')
+    +chip('simMatch',4,state.simMatch,'4個以上')+chip('simMatch',5,state.simMatch,'5個以上')+'</div>'
+    +'<p class="muted small">形の近さで絞る</p><div class="chiprow">'
+    +chip('simShape',100,state.simShape,'すべて')+chip('simShape',10,state.simShape,'上位10%')
+    +chip('simShape',5,state.simShape,'上位5%')+chip('simShape',1,state.simShape,'上位1%')+'</div>'
+    +'<p class="muted small">並び替え</p><div class="chiprow">'
+    +chip('simSort','match',state.simSort,'一致数順')+chip('simSort','shape',state.simSort,'形の近さ順')
+    +chip('simSort','new',state.simSort,'新しい順')+chip('simSort','old',state.simSort,'古い順')+'</div>';
+  h+=card('絞り込みと並び替え','対象 '+res.N+'回中 '+rows.length+'回が該当',ctrl);
+
+  if(!rows.length) return h+'<div class="hintbox">条件に合う回がありません。絞り込みを緩めてください。</div>';
+
+  const shown=rows.slice(0,state.simLimit);
+  let tr='';
+  shown.forEach(r=>{
+    // クラスだけで描く。インラインstyle付きのボールを数千個並べると再描画が1秒級になる
+    const balls=r.d.numbers.map(n=>'<i class="nb'+(r.hit.indexOf(n)>=0?' hit':'')+'">'+n+'</i>').join('');
+    // 回号と日付は1列にまとめて、本数字の欄に幅を回す（6個が1行に収まるように）
+    tr+='<tr><td class="whn"><b>'+(r.d.round!=null?'第'+r.d.round+'回':'—')+'</b><span>'+fmtDate(r.d.date)+'</span></td>'
+      +'<td><span class="nbrow">'+balls+'</span></td>'
+      +'<td class="n'+(r.m>=3?' hi':'')+'">'+r.m+'</td>'
+      +'<td class="n pc">'+pctText(r.pct)+'</td></tr>';
+  });
+  const more=rows.length>state.simLimit
+    ? '<div class="addrow" style="margin-top:12px"><button class="ghostbtn" data-action="simMore">さらに'
+      +Math.min(200,rows.length-state.simLimit)+'件表示（残り'+(rows.length-state.simLimit)+'件）</button></div>' : '';
+  h+=card('似た回の一覧',shown.length+' / '+rows.length+'件を表示中（金色が一致した数字）',
+    '<div class="btwrap"><table class="ptable simt"><thead><tr><th>回・抽せん日</th><th>本数字</th>'
+    +'<th style="text-align:right">一致</th><th style="text-align:right">近さ</th></tr></thead>'
+    +'<tbody>'+tr+'</tbody></table></div>'+more);
+
+  // 起点の形と、読み方の説明
+  const b=res.base;
+  h+=card('起点の組み合わせの形','この4つの指標で「形の近さ」を測っています',
+    '<div class="rstats">'
+    +'<div class="rcell"><span>合計値</span><b>'+b.sum+'</b></div>'
+    +'<div class="rcell"><span>奇数の個数</span><b>'+b.odd+'</b></div>'
+    +'<div class="rcell"><span>低い数(1〜'+Math.floor(cfg.max/2)+')</span><b>'+b.low+'</b></div>'
+    +'<div class="rcell"><span>連番</span><b>'+(b.consec?b.consec+' 組':'なし')+'</b></div></div>'
+    +'<p class="rnote">4つの指標はそれぞれ幅が違うため（合計値は'+cfg.minSum+'〜'+cfg.maxSum+'、連番は0〜'+(cfg.pick-1)+'）、'
+    +'履歴全体のばらつきで割って揃えてから距離を計算しています。'
+    +'「上位◯%」は全'+res.N+'回の中での近さの順位です。定義上、上位5%で絞れば必ず全体の約5%が残ります。</p>'
+    +'<div class="verdict warn"><b>これは過去の記録です。</b>'
+    +'似た回が多くても少なくても、次回この組み合わせが当たる確率は変わりません'
+    +'（'+Math.round(comb(cfg.max,cfg.pick)).toLocaleString()+'分の1で、どの組み合わせも同じ）。</div>');
   return h;
 }
 
@@ -1247,7 +1401,8 @@ function renderData(){
       '<span class="hdate">'+fmtDate(d.date)+'</span><div class="hballs">'+
       d.numbers.map(n=>ballHTML(n,'mini',26)).join('')+
       (d.bonus&&d.bonus.length?'<span class="bsep">+</span>'+d.bonus.map(n=>ballHTML(n,'cold',24)).join(''):'')+
-      '</div><button class="edit" data-action="editStart" data-id="'+d.id+'" title="編集">✎</button>'+
+      '</div><button class="edit" data-action="histSimilar" data-id="'+d.id+'" title="この回に似た回を探す">🔍</button>'+
+      '<button class="edit" data-action="editStart" data-id="'+d.id+'" title="編集">✎</button>'+
       '<button class="del" data-action="del" data-id="'+d.id+'">×</button></div>')).join('')+'</div>';
   h+=card('履歴 ('+rows.length+'件)','新しい順',tools+histBody);
 
@@ -1294,7 +1449,7 @@ document.addEventListener('click',e=>{
   const t=e.target.closest('[data-action]'); if(!t)return;
   const a=t.dataset.action; const cfg=GAMES[state.game];
   switch(a){
-    case 'game': state.game=t.dataset.game; state.sel=[]; state.bsel=[]; state.tsel=[]; state.sets=[]; state.lastWarn=''; state.edit=null; state.bt=null;
+    case 'game': state.game=t.dataset.game; state.sel=[]; state.bsel=[]; state.tsel=[]; state.sets=[]; state.lastWarn=''; state.edit=null; state.bt=null; state.simSel=[]; state.simFrom=''; state.simExcludeId=''; state.simLimit=200;
       if(state.autoSync && !state.syncInfo[state.game]) setTimeout(()=>syncRemote({silent:true}),0);
       break;
     case 'tab': state.tab=t.dataset.tab; break;
@@ -1336,6 +1491,44 @@ document.addEventListener('click',e=>{
     case 'gen': generate(+t.dataset.multi); return;
     case 'setImportMode': state.importMode=t.dataset.mode; break;
     case 'anaView': state.anaView=t.dataset.view; break;
+    case 'simToggle': {
+      const n=+t.dataset.n;
+      if(state.simSel.includes(n)) state.simSel=state.simSel.filter(x=>x!==n);
+      else if(state.simSel.length<cfg.pick) state.simSel=[...state.simSel,n];
+      // 手で触ったら「履歴の回を起点にしている」状態は解除する
+      state.simFrom=''; state.simExcludeId=''; state.simLimit=200;
+      break;
+    }
+    case 'simClear':  state.simSel=[]; state.simFrom=''; state.simExcludeId=''; state.simLimit=200; break;
+    case 'simRandom': state.simSel=pickRandom(cfg.max,cfg.pick); state.simFrom=''; state.simExcludeId=''; state.simLimit=200; break;
+    case 'simLoadSel': {
+      state.simSort='match'; state.simMatch=0; state.simShape=100; state.simLimit=200;
+      if(state.tsel.length!==cfg.pick)return;
+      state.simSel=[...state.tsel].sort((a,b)=>a-b);
+      state.simFrom=''; state.simExcludeId=''; state.simLimit=200;
+      break;
+    }
+    case 'simMatch': state.simMatch=+t.dataset.v; state.simLimit=200; break;
+    case 'simShape': state.simShape=+t.dataset.v; state.simLimit=200; break;
+    case 'simSort':  state.simSort=t.dataset.v;  state.simLimit=200; break;
+    case 'simMore':  state.simLimit+=200; break;
+    case 'simFromDiag': {
+      state.simSort='match'; state.simMatch=0; state.simShape=100; state.simLimit=200;
+      if(state.tsel.length!==cfg.pick)return;
+      state.simSel=[...state.tsel].sort((a,b)=>a-b);
+      state.simFrom=''; state.simExcludeId=''; state.simLimit=200;
+      state.tab='analysis'; state.anaView='similar';
+      break;
+    }
+    case 'histSimilar': {
+      state.simSort='match'; state.simMatch=0; state.simShape=100; state.simLimit=200;
+      const d=state.store[state.game].find(x=>x.id===t.dataset.id); if(!d)return;
+      state.simSel=[...d.numbers];
+      state.simExcludeId=d.id;
+      state.simFrom=(d.round!=null?'第'+d.round+'回':'')+' '+fmtDate(d.date);
+      state.simLimit=200; state.tab='analysis'; state.anaView='similar';
+      break;
+    }
     case 'runBacktest': {
       state.btRunning=true; render();
       // 重い計算なので描画を1フレーム挟んでからやる（ボタンの「計算中」を出すため）
