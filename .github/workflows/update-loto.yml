@@ -2,10 +2,12 @@ name: 当せん番号の自動更新
 
 on:
   schedule:
-    # 日本時間 火・金 の 08:10 = UTC 月・木 23:10
-    - cron: '10 23 * * 1,4'
-    # 保険としてもう1本（日本時間 水・土 の 08:10）
-    - cron: '10 23 * * 2,5'
+    # ロト6は月・木、ロト7は金の夜に抽せん。翌朝に取りに行く
+    # 日本時間 火・金・土 の 08:10 = UTC 月・木・金 23:10
+    - cron: '10 23 * * 1,4,5'
+    # 失敗したときの保険として、抽せんの2日後にもう1回（日本時間 水・日 の 08:10 = UTC 火・土 23:10）
+    # 木曜抽せん分の保険は、上の土曜の1本が兼ねる
+    - cron: '10 23 * * 2,6'
   workflow_dispatch:
     inputs:
       back:
@@ -36,6 +38,21 @@ jobs:
         with:
           node-version: '22'
 
+      # 手動実行の入力をそのままコマンドに埋め込むと、数字以外が入ったときに任意のコマンドとして
+      # 実行されてしまう。環境変数で受け取り、0以上の整数だけを通す
+      - name: 入力値を確認
+        env:
+          IN_BACK: ${{ inputs.back || '0' }}
+          IN_LIMIT: ${{ inputs.limit || '150' }}
+        run: |
+          for v in "$IN_BACK" "$IN_LIMIT"; do
+            case "$v" in
+              ''|*[!0-9]*) echo "::error::back / limit には0以上の整数を入れてください"; exit 1 ;;
+            esac
+          done
+          echo "BACK=$IN_BACK"   >> "$GITHUB_ENV"
+          echo "LIMIT=$IN_LIMIT" >> "$GITHUB_ENV"
+
       # 何が置かれているかを最初に出しておく（失敗時の切り分け用）
       - name: リポジトリの中身を確認
         run: |
@@ -62,7 +79,7 @@ jobs:
       - name: 当せん番号を取得
         id: fetch
         continue-on-error: true
-        run: node tools/update-loto.mjs --back ${{ inputs.back || '0' }} --limit ${{ inputs.limit || '150' }}
+        run: node tools/update-loto.mjs --back "$BACK" --limit "$LIMIT"
 
       # 上が失敗したときだけ、実ブラウザを入れて再試行する
       - name: 失敗したら Playwright で再試行
@@ -72,7 +89,7 @@ jobs:
           npm init -y >/dev/null 2>&1 || true
           npm i -D playwright@latest
           npx playwright install --with-deps chromium
-          node tools/update-loto.mjs --back ${{ inputs.back || '0' }} --limit ${{ inputs.limit || '150' }}
+          node tools/update-loto.mjs --back "$BACK" --limit "$LIMIT"
 
       - name: 取得後の件数
         run: |
@@ -92,7 +109,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/
           git commit -m "chore(data): 当せん番号を更新"
-          git push
+          # 実行中に別のコミットが入ると push が弾かれるので、取り込み直して再試行する
+          for i in 1 2 3; do
+            git pull --rebase origin "$GITHUB_REF_NAME" && git push origin "HEAD:$GITHUB_REF_NAME" && exit 0
+            echo "push に失敗しました。${i}回目の再試行を待ちます"
+            sleep $((i * 5))
+          done
+          echo "::error::3回試しましたが push できませんでした"
+          exit 1
 
       # 取得に失敗したら気づけるように Issue を立てる
       - name: 失敗を通知

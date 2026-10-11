@@ -24,7 +24,7 @@ console.log('\n[1] 必要な関数が全て存在するか');
 const NEEDED = ['analyze', 'analyzeCached', 'deepAnalyze', 'backtest', 'makeTicket', 'generate',
   'renderAnalysis', 'renderGenerate', 'renderTickets', 'renderData', 'renderDeep', 'renderBacktest',
   'editBoxHTML', 'cmpRow', 'cmpRowSE', 'cmpLegend', 'verdict', 'parseTable', 'parseJson', 'parseImport',
-  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'diagnose', 'renderDiagnosis', 'similarSearch', 'shapeOf', 'simFilterSort', 'renderSimilar', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'render'];
+  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'diagnose', 'renderDiagnosis', 'similarSearch', 'shapeOf', 'simFilterSort', 'renderSimilar', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'uniformityTest', 'chartData', 'renderChart', 'render'];
 const missing = NEEDED.filter((n) => !new RegExp(`function ${n}\\b`).test(script));
 ok(`${NEEDED.length}個の関数が定義済み`, missing.length === 0, `未定義: ${missing.join(', ')}`);
 
@@ -35,7 +35,7 @@ const orphan = [...new Set(used)].filter((a) => !handled.includes(a));
 ok(`${new Set(used).size}種のアクションが全て処理される`, orphan.length === 0, `未処理: ${orphan.join(', ')}`);
 
 console.log('\n[3] 修正が入っているか（退行の検出）');
-ok('カイ二乗の自由度が max-pick', /const df=cfg\.max-cfg\.pick/.test(script));
+ok('カイ二乗を非復元抽出で補正（自由度 max-1）', /const df=cfg\.max-1, adj=chi\*\(cfg\.max-1\)\/\(cfg\.max-cfg\.pick\)/.test(script));
 ok('分析キャッシュがリビジョンで無効化される', /_rev/.test(script) && /_anCache/.test(script));
 ok('デモデータ生成に確認がある', /seedDemo[\s\S]{0,400}?confirm\(/.test(script));
 ok('貼り付けテキストを state に保持', /state\.pasteText=e\.target\.value/.test(script));
@@ -49,7 +49,7 @@ console.log('\n[4] アプリのパーサを実行して検証');
 const require = createRequire(import.meta.url);
 const core = script.slice(0, script.indexOf('/* ===== HTML パーツ ===== */')).replace("'use strict';", '');
 const tmp = path.join(ROOT, 'tools', '.app-core.cjs');
-writeFileSync(tmp, core + '\nmodule.exports={GAMES,parseImport,parseJson,normDate,score,comb,hyperP,deepAnalyze,backtest,analyze,makeTicket,diagnose,similarSearch,shapeOf,simFilterSort};');
+writeFileSync(tmp, core + '\nmodule.exports={GAMES,parseImport,parseJson,normDate,score,comb,hyperP,chiP,deepAnalyze,backtest,analyze,makeTicket,diagnose,similarSearch,shapeOf,simFilterSort,uniformityTest,pickRandom,mergeDraws,state,chartData};');
 const A = require(tmp);
 const L6 = A.GAMES.loto6, L7 = A.GAMES.loto7;
 
@@ -81,6 +81,30 @@ for (const cfg of [L6, L7]) {
   ok(`${cfg.name} 平均が pick²/max`, Math.abs(mean - cfg.pick * cfg.pick / cfg.max) < 1e-9);
 }
 
+console.log('\n[5b] 均等性の検定（公正な乱数での偽陽性率が名目5%に近いか）');
+{
+  // 乱数を固定して毎回同じ結果にする（偽陽性率のような確率的な値でテストが揺れないように）
+  let seed = 20261011;
+  const rnd = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  const origRandom = Math.random; Math.random = rnd;
+  for (const cfg of [L6, L7]) {
+    const T = 4000, N = 200; let fp = 0, fpOld = 0;
+    for (let t = 0; t < T; t++) {
+      const f = new Array(cfg.max + 1).fill(0);
+      for (let i = 0; i < N; i++) for (const n of A.pickRandom(cfg.max, cfg.pick)) f[n]++;
+      const u = A.uniformityTest(f, N, cfg);
+      if (u.p < 0.05) fp++;
+      if (A.chiP(u.chi, cfg.max - cfg.pick) < 0.05) fpOld++;   // 旧版の近似（自由度 max−pick）
+    }
+    const rate = fp / T * 100, old = fpOld / T * 100;
+    console.log(`   ${cfg.name}: 補正後 ${rate.toFixed(2)}% / 旧版 ${old.toFixed(2)}%`);
+    ok(`${cfg.name} 偽陽性率が名目5%の近く（4.0〜6.0%）`, rate >= 4.0 && rate <= 6.0, `${rate.toFixed(2)}%`);
+    ok(`${cfg.name} 旧版の近似より名目5%に近い`, Math.abs(rate - 5) < Math.abs(old - 5), `補正後${rate.toFixed(2)}% / 旧版${old.toFixed(2)}%`);
+  }
+  Math.random = origRandom;
+}
+
 console.log('\n[6] バックテスト（公正な乱数では全戦略が理論値に収まる）');
 {
   const mk = (n) => { const d = [];
@@ -95,7 +119,7 @@ console.log('\n[6] バックテスト（公正な乱数では全戦略が理論�
   // 誤警報は5戦略同時比較で約6%なので、まれに超える。3回試して1回でも収まればよしとする
   let inside = 0;
   for (let t = 0; t < 3; t++) if (A.backtest(mk(400), L6, 300).maxZ < 2.6) inside++;
-  ok('公正な乱数では概ね誤差の範囲に収まる', inside >= 2, `3回中${inside}回`);
+  ok('公正な乱数では概ね誤差の範囲に収まる', inside >= 1, `3回中${inside}回`);
   ok('データ不足時はエラー', !!A.backtest(mk(10), L6, 50).error);
 }
 
@@ -196,6 +220,62 @@ console.log('\n[8] 似た回の検索');
   ok('3個以上一致の件数が理論値の近く', Math.abs(obs3 - 1600 * expHit3) < 4 * Math.sqrt(1600 * expHit3),
      `実測${obs3}件 / 理論${(1600 * expHit3).toFixed(1)}件`);
   console.log(`   1600回中: 3個以上一致 ${obs3}件（理論 ${(1600*expHit3).toFixed(1)}件）`);
+}
+
+console.log('\n[8b] 自動取得のマージ（公式データの訂正）');
+{
+  const S = A.state;
+  const base = () => [
+    { id: 'a', round: 10, date: '2026-01-05', numbers: [1,2,3,4,5,6], bonus: [7] },
+    { id: 'b', round: 11, date: '2026-01-08', numbers: [8,9,10,11,12,13], bonus: [14], edited: true },
+  ];
+  const remote = [
+    { round: 10, date: '2026-01-05', numbers: [1,2,3,4,5,40], bonus: [7] },   // 公式で訂正された
+    { round: 11, date: '2026-01-08', numbers: [20,21,22,23,24,25], bonus: [26] },
+    { round: 12, date: '2026-01-12', numbers: [30,31,32,33,34,35], bonus: [36] },
+  ];
+  S.store.loto6 = base();
+  eq('自動取得では訂正を反映し新しい回を追加', A.mergeDraws('loto6', remote, { update: true }), { added: 1, updated: 1 });
+  eq('訂正後の番号', S.store.loto6.find(d => d.round === 10).numbers, [1,2,3,4,5,40]);
+  eq('訂正しても id は変わらない', S.store.loto6.find(d => d.round === 10).id, 'a');
+  eq('手で直した回は上書きしない', S.store.loto6.find(d => d.round === 11).numbers, [8,9,10,11,12,13]);
+  eq('同じ内容を再取得しても変更なし', A.mergeDraws('loto6', remote, { update: true }), { added: 0, updated: 0 });
+  S.store.loto6 = base();
+  eq('ファイル取り込み(追記)では既存の回を上書きしない', A.mergeDraws('loto6', remote), { added: 1, updated: 0 });
+  eq('既存の回はそのまま', S.store.loto6.find(d => d.round === 10).numbers, [1,2,3,4,5,6]);
+}
+
+console.log('\n[8c] ご無沙汰番号は回号順で数える');
+{
+  // 日付が無くても回号があれば順序は決まる。旧版は日付で並べていたため順序が崩れていた
+  const draws = [
+    { id: 'p', round: 3, date: '', numbers: [1,2,3,4,5,6], bonus: [] },
+    { id: 'q', round: 1, date: '', numbers: [7,8,9,10,11,12], bonus: [] },
+    { id: 'r', round: 2, date: '', numbers: [13,14,15,16,17,18], bonus: [] },
+  ];
+  const a = A.analyze(draws, L6);
+  eq('最新回(第3回)の番号は0回前', a.gap[1], 0);
+  eq('第1回の番号は2回前', a.gap[7], 2);
+  eq('全回に回号があれば日付欠落の警告を出さない', a.noDate, 0);
+  eq('回号も日付もない回があれば警告する', A.analyze([...draws, { id: 's', round: null, date: '', numbers: [20,21,22,23,24,25], bonus: [] }], L6).noDate, 4);
+}
+
+console.log('\n[8d] 出目表の集計');
+{
+  const draws = [
+    { id: 'a', round: 101, date: '2026-01-05', numbers: [1,2,3,4,5,6], bonus: [7] },
+    { id: 'c', round: 103, date: '2026-01-12', numbers: [1,10,11,12,13,14], bonus: [2] },
+    { id: 'b', round: 102, date: '2026-01-08', numbers: [2,20,21,22,23,24], bonus: [1] },
+  ];
+  const c = A.chartData(draws, L6, 2);
+  eq('直近の回だけを新しい順に', c.rows.map(d => d.round), [103, 102]);
+  eq('本数字の出現回数（範囲内だけ）', [c.count[1], c.count[2], c.count[3]], [1, 1, 0]);
+  eq('ボーナス数字は別に数える', [c.bcount[1], c.bcount[2], c.bcount[7]], [1, 1, 0]);
+  eq('最後に出てから何回前か（出ていなければ-1）', [c.last[1], c.last[2], c.last[3]], [0, 1, -1]);
+  ok('理論値 = 回数×pick/max', Math.abs(c.exp - 2 * 6 / 43) < 1e-12);
+  eq('最多の出現回数', c.maxCount, 1);
+  eq('範囲が履歴より広ければ全件', A.chartData(draws, L6, 50).rows.length, 3);
+  eq('出現回数の合計 = 回数×pick', A.chartData(draws, L6, 50).count.reduce((a, b) => a + b, 0), 18);
 }
 
 console.log('\n[9] 詳細分析');

@@ -5,10 +5,12 @@
  *   node tools/update-loto.mjs            … 両方を更新
  *   node tools/update-loto.mjs loto6      … ロト6だけ
  *   node tools/update-loto.mjs --dry-run  … ファイルを書かずに結果だけ表示
+ *   node tools/update-loto.mjs --recheck 0 … 直近の回の取り直し（訂正の確認）をしない
  *
  * 設計方針:
  *  - 既存 JSON は絶対に減らさない。取得結果は必ず「マージ」する。
  *  - 1件も正しく解釈できなかった場合は exit 1 で落とす（壊れたデータをコミットさせない）。
+ *  - 公式側の訂正を拾うため、手元にある直近の数回も毎回取り直す。内容が変わらなければ書き込まない。
  *  - 列の並びを決め打ちしない。ファイル全体の列プロファイルから本数字ブロックを特定する。
  *  - 素の fetch が弾かれた場合のみ Playwright にフォールバックする。
  */
@@ -383,6 +385,9 @@ async function mapLimit(items, limit, fn, opts = {}) {
   return out;
 }
 
+/** 訂正の確認のために毎回取り直す直近の回数 */
+const RECHECK = 3;
+
 /** 件数が多いほど遠慮がちに取りに行く。数千件を全力で叩かないための調整。 */
 function pace(count) {
   if (count > 1000) return { conc: 3, gap: 250 };
@@ -429,7 +434,12 @@ async function updateGame(cfg, opts) {
     for (let r = from - 1; r >= to; r--) wanted.push(r);
     console.log(`  さかのぼり: 第${to}回 〜 第${from - 1}回 を対象に加えます`);
   }
-  const targets = wanted.filter((r) => !have.has(r)).sort((a, b) => b - a).slice(0, opts.limit);
+  const missing = wanted.filter((r) => !have.has(r)).sort((a, b) => b - a).slice(0, opts.limit);
+  // 公式側で訂正された回を拾うため、目次にある回のうち手元にある直近の数回も取り直す。
+  // さかのぼりの打ち切り（存在しない回が30回続いたら止める）に巻き込まれないよう先に処理する
+  const recheck = index.map((x) => x.round).filter((r) => have.has(r))
+    .sort((a, b) => b - a).slice(0, opts.recheck ?? RECHECK);
+  const targets = [...recheck, ...missing];
 
   if (!targets.length) {
     console.log(`  すでに最新です（手元 ${prevDraws.length}回 / 最新 第${latestRound}回）`);
@@ -437,21 +447,28 @@ async function updateGame(cfg, opts) {
   }
   const pc = pace(targets.length);
   const estSec = Math.round(targets.length / pc.conc * (pc.gap + 250) / 1000);
-  console.log(`  未取得 ${targets.length}回 を取得します…`
+  console.log(`  未取得 ${missing.length}回`
+            + (recheck.length ? ` + 訂正の確認 ${recheck.length}回` : '') + ' を取得します…'
             + `（同時${pc.conc}件 / 間隔${pc.gap}ms / 目安 約${Math.max(1, Math.round(estSec / 60))}分）`);
 
   // 3) 回別CSVを取りに行く
-  let okCount = 0, ngCount = 0, miss = 0, stopped = false;
+  const isRecheck = new Set(recheck);
+  // 目次に載っている（＝公開済みの）未取得の回。取れなければ遮断や形式変更を疑う
+  const listed = (r) => dateOf.has(r) && !isRecheck.has(r);
+  let okCount = 0, ngCount = 0, newOk = 0, listedOk = 0, listedErr = 0, miss = 0, stopped = false;
   const fetched = await mapLimit(targets, pc.conc, async (r) => {
     if (stopped) return null;
     try {
       const { text } = await fetchCsv(cfg.roundUrl(r));
       const d = parseRound(text, cfg);
-      if (!d) { ngCount++; return null; }
+      if (!d) { ngCount++; if (listed(r)) listedErr++; return null; }
       okCount++; miss = 0;
+      if (!isRecheck.has(r)) newOk++;
+      if (listed(r)) listedOk++;
       return { round: r, date: d.date || dateOf.get(r) || '', numbers: d.numbers, bonus: d.bonus };
     } catch (e) {
       ngCount++;
+      if (listed(r) && !(e instanceof HttpError && e.status === 404)) listedErr++;
       // 公開されていない回が続いたら、それ以上さかのぼっても無駄なので打ち切る
       if (e instanceof HttpError && e.status === 404 && ++miss >= 30 && !stopped) {
         stopped = true;
@@ -463,13 +480,18 @@ async function updateGame(cfg, opts) {
   const got = fetched.filter(Boolean);
   console.log(`  取得成功 ${okCount}回 / 失敗・欠番 ${ngCount}回`);
 
+  // 目次にある回を1件も取れず、原因が欠番(404)以外なら失敗にする。手元にデータがあると
+  // 「新しい回が無かった」と区別がつかず、遮断や形式変更でも成功扱いになって気づけないため
+  // （失敗にすれば Playwright での再試行と Issue の通知が動く）
+  if (listedErr && !listedOk)
+    throw new Error(`${cfg.name}: 目次にある未取得の回を1件も取得できませんでした（${listedErr}件失敗）`);
+  // すでにデータを持っているなら「新しく取れる回が無かった」だけ。失敗ではない。
+  // （さかのぼり切ったあとに再実行したときに、ここで落とすとIssueが立ってしまう）
+  if (missing.length && !newOk && prevDraws.length)
+    console.log('  新しく取得できた回はありませんでした'
+      + (opts.back > 0 ? '（これ以上さかのぼれない可能性があります）' : '（回別CSVがまだ公開されていない可能性があります）'));
   if (!got.length) {
-    // すでにデータを持っているなら「新しく取れる回が無かった」だけ。失敗ではない。
-    // （さかのぼり切ったあとに再実行したときに、ここで落とすとIssueが立ってしまう）
-    if (prevDraws.length) {
-      console.log('  新しく取得できた回はありませんでした（これ以上さかのぼれない可能性があります）');
-      return { added: 0, updated: 0 };
-    }
+    if (prevDraws.length) return { added: 0, updated: 0 };
     throw new Error(`${cfg.name}: 回別CSVを1件も取得できませんでした`);
   }
 
@@ -481,6 +503,11 @@ async function updateGame(cfg, opts) {
   const { draws, added, updated } = mergeDraws(prevDraws, got);
   if (draws.length < prevDraws.length)
     throw new Error(`${cfg.name}: 件数が減っています (${prevDraws.length} → ${draws.length})。取り込みを中止します`);
+  // 中身が同じなのに書き直すと updated の日付だけ変わり、無意味なコミットが毎回できてしまう
+  if (!added && !updated && prevDraws.length) {
+    console.log(`  変更なし（手元 ${prevDraws.length}回 / 最新 第${latestRound}回）。書き込みません`);
+    return { added: 0, updated: 0 };
+  }
 
   const latest = draws.reduce((a, d) => (d.round != null && d.round > a ? d.round : a), 0);
   const payload = {
@@ -495,9 +522,9 @@ async function updateGame(cfg, opts) {
     draws,
   };
 
-  console.log(`  新規 ${added}件 / 更新 ${updated}件 / 合計 ${draws.length}件`
+  console.log(`  新規 ${added}件 / 更新（公式側の訂正）${updated}件 / 合計 ${draws.length}件`
             + (latest ? ` / 最新 第${latest}回 (${payload.latestDate})` : ''));
-  if (targets.length === opts.limit)
+  if (missing.length === opts.limit)
     console.log(`  ※ 1回の実行では最大${opts.limit}件までにしています。残りは次回の実行で取得します。`);
 
   if (opts.dryRun) { console.log('  (dry-run のため書き込みませんでした)'); return { added, updated }; }
@@ -524,6 +551,7 @@ if (isMain) {
     dryRun: args.includes('--dry-run'),
     limit: numArg('--limit', 150),   // 1回の実行で取りに行く最大回数
     back: numArg('--back', 0),       // 目次より古い回をいくつさかのぼるか
+    recheck: numArg('--recheck', RECHECK),   // 訂正の確認のために取り直す直近の回数
   };
   const targets = args.filter((a) => GAMES[a]);
   const list = targets.length ? targets : Object.keys(GAMES);
