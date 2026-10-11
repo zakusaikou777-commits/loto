@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** 取得フロー全体の検証（通信はモック）:  node tools/test-fetch.mjs */
 import { GAMES, updateGame, parseIndex, parseRound } from './update-loto.mjs';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 // 本物の data/ を読むと、データが溜まった時点で「すでに最新」になりテストが成り立たない。
@@ -81,6 +81,48 @@ globalThis.fetch=async(u)=>{
 };
 const r4=await updateGame(L6,{dryRun:true,dataDir,limit:20,back:0});
 ok('欠番2回を除いて取得', r4.added===18, 'added='+r4.added);
+
+console.log('\n[公式側の訂正を取り込み、変化がなければ書き込まない]');
+globalThis.fetch=orig;
+const fixDir=mkdtempSync(path.join(os.tmpdir(), 'lotolab-fix-test-'));
+const fixFile=path.join(fixDir,'loto6.json');
+await updateGame(L6,{dryRun:false,limit:150,back:0,dataDir:fixDir});
+const j1=JSON.parse(readFileSync(fixFile,'utf8'));
+const lastDraw=j1.draws[j1.draws.length-1], good=[...lastDraw.numbers];
+lastDraw.numbers=[1,2,3,4,5,6]; j1.updated='2000-01-01';     // 手元の最新回だけ誤った内容にしておく
+writeFileSync(fixFile,JSON.stringify(j1));
+reqs=0;
+const r5=await updateGame(L6,{dryRun:false,limit:150,back:0,dataDir:fixDir});
+ok('最新回の訂正を取り込む', r5.updated===1 && r5.added===0, JSON.stringify(r5));
+ok('確認のリクエストは目次1 + 直近3回だけ', reqs===4, 'reqs='+reqs);
+const j2=JSON.parse(readFileSync(fixFile,'utf8'));
+ok('訂正後の番号になっている', JSON.stringify(j2.draws[j2.draws.length-1].numbers)===JSON.stringify(good));
+j2.updated='2000-01-01'; writeFileSync(fixFile,JSON.stringify(j2));
+const r6=await updateGame(L6,{dryRun:false,limit:150,back:0,dataDir:fixDir});
+ok('変化がなければファイルを書き直さない', r6.added===0 && r6.updated===0
+   && JSON.parse(readFileSync(fixFile,'utf8')).updated==='2000-01-01');
+reqs=0;
+await updateGame(L6,{dryRun:true,limit:150,back:0,dataDir:fixDir,recheck:0});
+ok('--recheck 0 なら目次だけ', reqs===1, 'reqs='+reqs);
+
+console.log('\n[目次にある回を1件も読めなければ、手元にデータがあっても失敗にする]');
+// 回別CSVの形式が変わった想定（本数字の行が無い）。遮断(403)でも同じ扱いになるが、
+// 403 だとブラウザ経由に切り替わってしまうので、ここでは形式変更で確かめる
+const j3=JSON.parse(readFileSync(fixFile,'utf8'));
+j3.draws=j3.draws.filter(d=>d.round<=2112); j3.count=j3.draws.length;       // 2113〜2124回が未取得
+writeFileSync(fixFile,JSON.stringify(j3));
+globalThis.fetch=async(u)=>String(u).endsWith('loto6.csv')?orig(u)
+  :{ok:true,status:200,arrayBuffer:async()=>Buffer.from('A52\r\n第2124回ロト６,x,令和8年7月1日,y\r\n新しい形式,06,20,29','utf8')};
+let err7=null;
+try{ await updateGame(L6,{dryRun:true,limit:150,back:0,dataDir:fixDir}); }catch(e){ err7=e; }
+ok('失敗として扱う（Playwright再試行とIssue通知が動く）', !!err7, '例外なし');
+globalThis.fetch=async(u)=>{ const s=String(u);
+  if(/A102(2124|2123)\.CSV$/.test(s)) return {ok:false,status:404,arrayBuffer:async()=>new ArrayBuffer(0)};
+  return orig(u); };
+writeFileSync(fixFile,JSON.stringify({...j2,draws:j2.draws.filter(d=>d.round<=2122)}));   // 未取得は404の2123・2124回だけ
+let err9=null;
+try{ await updateGame(L6,{dryRun:true,limit:150,back:0,dataDir:fixDir}); }catch(e){ err9=e; }
+ok('最新回のCSVがまだ公開されていない(404)だけなら失敗にしない', !err9, err9&&err9.message);
 
 console.log('\n=== '+pass+' passed / '+fail+' failed ===');
 process.exit(fail?1:0);

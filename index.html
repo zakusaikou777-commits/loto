@@ -241,13 +241,13 @@ const lerp = (a,b,t) => { const A=hexToRgb(a),B=hexToRgb(b); const c=A.map((v,i)
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const rid = () => Math.random().toString(36).slice(2,8);
 const uid = () => Date.now().toString(36)+'_'+rid();
-/* 日付の降順比較（等値で 0 を返す整合的な比較関数） */
-const byDateDesc = (a,b) => (a.date<b.date?1:a.date>b.date?-1:0);
 /* 時系列（古い順）。回号があればそれを優先する */
 const byChrono = (a,b) => {
   if(a.round!=null&&b.round!=null) return a.round-b.round;
   return a.date<b.date?-1:a.date>b.date?1:0;
 };
+/* 新しい順。日付だけで並べると、回号はあるが日付が無い回の順序が崩れるため byChrono を逆にする */
+const byChronoDesc = (a,b) => byChrono(b,a);
 /* 組合せ数。C(43,6)=6096454 程度なので倍精度で足りる */
 function comb(n,k){ if(k<0||k>n) return 0; k=Math.min(k,n-k); let r=1; for(let i=1;i<=k;i++) r=r*(n-k+i)/i; return r; }
 /* 超幾何分布: max個からpick個を引いたとき、指定のpick個のうち j 個が一致する確率 */
@@ -274,6 +274,17 @@ function weightedPick(weights,count){
 function logGamma(x){const c=[0.99999999999980993,676.5203681218851,-1259.1392167224028,771.32342877765313,-176.61502916214059,12.507343278686905,-0.13857109526572012,9.9843695780195716e-6,1.5056327351493116e-7];const g=7;if(x<0.5)return Math.log(Math.PI/Math.sin(Math.PI*x))-logGamma(1-x);x-=1;let a=c[0];const t=x+g+0.5;for(let i=1;i<g+2;i++)a+=c[i]/(x+i);return 0.5*Math.log(2*Math.PI)+(x+0.5)*Math.log(t)-t+Math.log(a);}
 function gammp(a,x){const gln=logGamma(a),FPMIN=1e-300,EPS=1e-12;if(x<=0)return 0;if(x<a+1){let ap=a,sum=1/a,del=sum;for(let n=0;n<300;n++){ap++;del*=x/ap;sum+=del;if(Math.abs(del)<Math.abs(sum)*EPS)break;}return sum*Math.exp(-x+a*Math.log(x)-gln);}let b=x+1-a,c=1/FPMIN,d=1/b,h=d;for(let i=1;i<300;i++){const an=-i*(i-a);b+=2;d=an*d+b;if(Math.abs(d)<FPMIN)d=FPMIN;c=b+an/c;if(Math.abs(c)<FPMIN)c=FPMIN;d=1/d;const del=d*c;h*=del;if(Math.abs(del-1)<EPS)break;}return 1-Math.exp(-x+a*Math.log(x)-gln)*h;}
 function chiP(chi,df){if(chi<=0)return 1;if(df<=0)return 1;return 1-gammp(df/2,chi/2);}
+/* 出現回数の均等性の検定。
+   各回は pick 個を重複なく選ぶ（非復元抽出）ので、番号どうしの出現回数に負の相関があり、
+   χ² は (max−pick)/(max−1) × χ²(max−1) に従う。旧版の「自由度 max−pick」は平均だけを合わせた近似で
+   分散が大きすぎ、5%水準のつもりが実際は3.4〜4%しか検出しなかった。
+   (max−1)/(max−pick) を掛けて自由度 max−1 で判定すると 4.8% 前後になる（シミュレーションで確認）。 */
+function uniformityTest(freq,count,cfg){
+  const expected=count*cfg.pick/cfg.max;
+  let chi=0; for(let n=1;n<=cfg.max;n++){const o=freq[n];chi+=(o-expected)*(o-expected)/expected;}
+  const df=cfg.max-1, adj=chi*(cfg.max-1)/(cfg.max-cfg.pick);
+  return {expected,chi,adj,df,p:chiP(adj,df)};
+}
 
 /* ===== 分析エンジン（結果はキャッシュ） ===== */
 let _anCache={key:'',val:null};
@@ -287,7 +298,7 @@ function analyze(draws,cfg){
   const N=cfg.max;
   const freq=new Array(N+1).fill(0);
   const gap=new Array(N+1).fill(null);
-  const sorted=[...draws].sort(byDateDesc);
+  const sorted=[...draws].sort(byChronoDesc);
   sorted.forEach((d,idx)=>d.numbers.forEach(n=>{freq[n]++; if(gap[n]===null)gap[n]=idx;}));
   const sums=[],oddCounts=[],lowCounts=[]; const oddDist=new Array(cfg.pick+1).fill(0);
   draws.forEach(d=>{
@@ -301,7 +312,8 @@ function analyze(draws,cfg){
   const cold=[...ranked].sort((a,b)=>a.f-b.f||a.n-b.n).slice(0,cfg.pick);
   const overdue=[...ranked].filter(x=>x.gap!==null).sort((a,b)=>b.gap-a.gap||a.n-b.n).slice(0,cfg.pick);
   const never=ranked.filter(x=>x.f===0).map(x=>x.n);
-  const noDate=draws.filter(d=>!d.date).length;
+  // 全回に回号があれば日付が欠けていても順序は正しい。順序が決まらないのはそれ以外の場合だけ
+  const noDate=draws.every(d=>d.round!=null)?0:draws.filter(d=>!d.date).length;
   const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0;
   const sumStats=sums.length?{avg:avg(sums),min:Math.min(...sums),max:Math.max(...sums)}:null;
   const bins=10, span=(cfg.maxSum-cfg.minSum)/bins; const hist=new Array(bins).fill(0);
@@ -346,7 +358,7 @@ function bestResult(tk,draws,cfg){
 let state={game:'loto6',store:{loto6:[],loto7:[]},tickets:{loto6:[],loto7:[]},tab:'analysis',
   sel:[],bsel:[],tsel:[],showBonus:false,date:todayISO(),strategy:'random',sets:[],excludePast:false,
   importMode:'merge',showNote:true,flash:'',pasteText:'',anaView:'basic',edit:null,bt:null,btRunning:false,simSel:[],simMatch:0,simShape:100,simSort:'match',simLimit:200,histLimit:100,simFrom:'',simExcludeId:'',
-  autoSync:true,syncing:false,syncInfo:{loto6:null,loto7:null},lastWarn:'',syncError:''};
+  autoSync:true,syncing:false,syncInfo:{loto6:null,loto7:null},lastWarn:'',syncError:{loto6:'',loto7:''}};
 
 const LS={d6:'lotolab-loto6',d7:'lotolab-loto7',t6:'lotolab-tk-loto6',t7:'lotolab-tk-loto7',
   meta:'lotolab-meta'};
@@ -366,7 +378,8 @@ function migrate(arr){
   if(!Array.isArray(arr))return[];
   return arr.filter(d=>d&&Array.isArray(d.numbers)).map(d=>({
     id:d.id||uid(), round:(typeof d.round==='number'?d.round:null),
-    date:d.date||'', numbers:d.numbers.map(Number), bonus:Array.isArray(d.bonus)?d.bonus.map(Number):[]
+    date:d.date||'', numbers:d.numbers.map(Number), bonus:Array.isArray(d.bonus)?d.bonus.map(Number):[],
+    ...(d.edited===true?{edited:true}:{})
   }));
 }
 function save(){
@@ -565,21 +578,33 @@ function score(res,cfg){
 
 /* ===== マージ ===== */
 function keyOf(d){ return d.round!=null ? 'r'+d.round : 'd'+d.date+'|'+d.numbers.join('-'); }
-function mergeDraws(gameKey,incoming){
+/* opts.update: 同じ回号の内容が違えば取り込む側に合わせる（公式データの訂正を反映するため）。
+   利用者が ✎ で直した回（edited）は上書きしない */
+function mergeDraws(gameKey,incoming,opts){
+  opts=opts||{};
   const existing=state.store[gameKey];
   const seen=new Set(existing.map(keyOf));
   // 回号を持たない既存データとの重複も拾う
   const alt=new Set(existing.map(d=>d.date+'|'+d.numbers.join('-')));
-  let added=0;
+  const byRound=new Map();
+  existing.forEach((d,i)=>{ if(d.round!=null&&!byRound.has(d.round)) byRound.set(d.round,i); });
+  const sig=d=>d.date+'|'+d.numbers.join('-')+'|'+(d.bonus||[]).join('-');
+  let added=0,updated=0;
   const merged=[...existing];
   for(const d of incoming){
+    if(opts.update && d.round!=null && byRound.has(d.round)){
+      const i=byRound.get(d.round), cur=merged[i];
+      const next={...cur,date:d.date||cur.date,numbers:d.numbers,bonus:d.bonus||[]};
+      if(!cur.edited && sig(next)!==sig(cur)){ merged[i]=next; updated++; }
+      continue;
+    }
     const k=keyOf(d), k2=d.date+'|'+d.numbers.join('-');
     if(seen.has(k)||alt.has(k2))continue;
     seen.add(k); alt.add(k2);
     merged.push({id:uid(),...d}); added++;
   }
-  if(added) state.store[gameKey]=merged;
-  return added;
+  if(added||updated) state.store[gameKey]=merged;
+  return {added,updated};
 }
 
 function importData(text){
@@ -602,7 +627,7 @@ function importData(text){
   const arr=mine.draws;
   let msg='';
   if(state.importMode==='merge'){
-    const added=mergeDraws(state.game,arr);
+    const {added}=mergeDraws(state.game,arr);
     msg=added+'件を追記（重複'+(arr.length-added)+'件スキップ）';
   }else{
     const existing=state.store[state.game];
@@ -614,7 +639,9 @@ function importData(text){
   }
   state.bt=null;
   if(mine.noDate) msg+=' / 日付を読み取れなかった行 '+mine.noDate+'件';
-  state.lastWarn = mine.noDate ? '日付を読み取れなかった行が'+mine.noDate+'件あります。「ご無沙汰番号」は抽せん日の順序を使うため、日付欠落があると正しく計算できません。西暦(2026/5/30)か和暦(令和8年5月30日 / R8.5.30)の列が含まれるファイルを取り込むか、手動で日付を補ってください。' : '';
+  // 回号がそろっていれば順序は回号で決まるので、警告するのは回号のない行があるときだけ
+  const needDate=mine.noDate && arr.some(d=>d.round==null);
+  state.lastWarn = needDate ? '日付を読み取れなかった行が'+mine.noDate+'件あります。「ご無沙汰番号」は回号・抽せん日の順序を使うため、回号も日付もない行があると正しく計算できません。西暦(2026/5/30)か和暦(令和8年5月30日 / R8.5.30)の列が含まれるファイルを取り込むか、手動で日付を補ってください。' : '';
   save(); flash(msg);
 }
 
@@ -645,14 +672,15 @@ async function syncRemote(opts){
     // ファイルはあるが中身が空 ＝ 更新ワークフローがまだ動いていない。
     // 「未配置」と混同すると原因が分からなくなるので区別する。
     if(!parsed||!parsed.draws.length) throw new Error('emptyfile');
-    const added=mergeDraws(gameKey,parsed.draws);
-    if(added) state.bt=null;
+    const {added,updated}=mergeDraws(gameKey,parsed.draws,{update:true});
+    if(added||updated) state.bt=null;
     _syncedThisSession[gameKey]=true;
     state.syncInfo[gameKey]={updated:j.updated||'',latest:j.latestRound||null,total:parsed.draws.length,at:new Date().toISOString()};
-    state.syncError='';
+    state.syncError[gameKey]='';
     save();
-    if(!opts.silent) flash(added?added+'件の新しい抽せん結果を取り込みました':'すでに最新です');
-    else if(added){ state.flash='最新の'+cfg.name+'結果を'+added+'件追加しました'; clearTimeout(_ft); _ft=setTimeout(()=>{state.flash='';render();},2800); }
+    const fixed=updated?'（'+updated+'件を公式データの訂正に合わせて修正）':'';
+    if(!opts.silent) flash(added?added+'件の新しい抽せん結果を取り込みました'+fixed:updated?updated+'件を公式データの訂正に合わせて修正しました':'すでに最新です');
+    else if(added||updated){ state.flash=added?'最新の'+cfg.name+'結果を'+added+'件追加しました'+fixed:cfg.name+'の'+updated+'件を公式データの訂正に合わせて修正しました'; clearTimeout(_ft); _ft=setTimeout(()=>{state.flash='';render();},2800); }
   }catch(e){
     const m=String((e&&e.message)||'');
     let msg;
@@ -666,7 +694,7 @@ async function syncRemote(opts){
       msg='オフラインのため取得できません。通信できる状態で再度お試しください。';
     else
       msg='最新データを取得できませんでした（'+m+'）。';
-    state.syncError=msg;
+    state.syncError[gameKey]=msg;
     if(!opts.silent) flash(msg);
   }finally{
     state.syncing=false; render();
@@ -677,7 +705,7 @@ async function syncRemote(opts){
 function download(name,content,type){const b=new Blob([content],{type});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);}
 function exportCsv(){
   const cfg=GAMES[state.game];
-  const rows=[...state.store[state.game]].sort(byDateDesc);
+  const rows=[...state.store[state.game]].sort(byChronoDesc);
   if(!rows.length){flash('履歴がありません');return;}
   const head=['回号','抽せん日'].concat(Array.from({length:cfg.pick},(_,i)=>'第'+(i+1)+'数字'),
               Array.from({length:cfg.bonus},(_,i)=>'B'+(i+1))).join(',');
@@ -837,7 +865,7 @@ function diagnose(nums,draws,cfg){
     if(hit.length>=3) matches.push({d,hit:hit.sort((a,b)=>a-b)});
   }
   const distExp=[]; for(let j=0;j<=cfg.pick;j++) distExp.push(hyperP(cfg,j)*N);
-  matches.sort((a,b)=>b.hit.length-a.hit.length || (a.d.date<b.d.date?1:-1));
+  matches.sort((a,b)=>b.hit.length-a.hit.length || byChronoDesc(a.d,b.d));
   const exact=matches.filter(m=>m.hit.length===cfg.pick);
   const bestM=matches.length?matches[0].hit.length:Math.max(0,...dist.map((v,i)=>v?i:0));
 
@@ -933,11 +961,7 @@ function heatHTML(a,cfg){let cells='';for(let n=1;n<=cfg.max;n++){const f=a.freq
 function card(title,sub,body){return '<div class="card"><div class="card-h"><h3>'+title+'</h3>'+(sub?'<p>'+sub+'</p>':'')+'</div><div class="card-b">'+body+'</div></div>';}
 
 function randomnessHTML(a,cfg){
-  const expected=a.count*cfg.pick/cfg.max;
-  let chi=0; for(let n=1;n<=cfg.max;n++){const o=a.freq[n];chi+=(o-expected)*(o-expected)/expected;}
-  // 各回は非復元抽出(pick個を重複なく選ぶ)なので E[χ²] = max - pick。
-  // df = max - 1 は誤りで、検定が保守的になり偏りを検出できなくなる。
-  const df=cfg.max-cfg.pick; const p=chiP(chi,df);
+  const {expected,adj,df,p}=uniformityTest(a.freq,a.count,cfg);
   const fs=a.freq.slice(1); const omin=Math.min(...fs),omax=Math.max(...fs);
   let v,vc,note;
   if(a.count<50){v='データ不足（'+a.count+'回）';vc='vmid';note='判定には50回以上のデータを推奨します。';}
@@ -945,13 +969,14 @@ function randomnessHTML(a,cfg){
   else if(p>=0.01){v='△ わずかな偏りの兆候';vc='vmid';note='偶然の範囲のこともありますが、やや均等から外れています。';}
   else{v='⚠ 統計的な偏りを検出';vc='vbad';note='均等分布から有意に外れています。入力ミスや取り込み形式のズレがないか確認をおすすめします。';}
   let rows='<div class="rcell"><span>各番号の理論上の出現</span><b>'+expected.toFixed(1)+' 回</b></div><div class="rcell"><span>実際の最少〜最多</span><b>'+omin+'〜'+omax+' 回</b></div>';
-  if(a.count>=50)rows+='<div class="rcell"><span>カイ二乗値 (自由度'+df+')</span><b>'+chi.toFixed(1)+'</b></div><div class="rcell"><span>p値（均等性）</span><b>'+(p<0.001?'&lt;0.001':p.toFixed(3))+'</b></div>';
-  const body='<div class="rcheck '+vc+'">'+v+'</div><div class="rstats">'+rows+'</div><p class="rnote">'+note+'　これは「予測」ではなく、抽選が公正な乱数かどうかの簡易チェックです。自由度は非復元抽出を考慮して '+cfg.max+'−'+cfg.pick+'='+df+' としています。</p>';
+  if(a.count>=50)rows+='<div class="rcell"><span>補正カイ二乗値 (自由度'+df+')</span><b>'+adj.toFixed(1)+'</b></div><div class="rcell"><span>p値（均等性）</span><b>'+(p<0.001?'&lt;0.001':p.toFixed(3))+'</b></div>';
+  const body='<div class="rcheck '+vc+'">'+v+'</div><div class="rstats">'+rows+'</div><p class="rnote">'+note+'　これは「予測」ではなく、抽選が公正な乱数かどうかの簡易チェックです。1回に'+cfg.pick+'個を重複なく選ぶ（非復元抽出）ため、カイ二乗値に ('+cfg.max+'−1)/('+cfg.max+'−'+cfg.pick+') を掛けて補正し、自由度 '+df+' で判定しています。</p>';
   return card('ランダム性チェック','データが均等分布（＝公正な乱数）とどれだけ一致するか',body);
 }
 
 function emptyHTML(){
-  const err=state.syncError?'<div class="warnbox" style="margin-bottom:14px;text-align:left">'+esc(state.syncError)+'</div>':'';
+  const se=state.syncError[state.game];
+  const err=se?'<div class="warnbox" style="margin-bottom:14px;text-align:left">'+esc(se)+'</div>':'';
   return err+'<div class="empty"><div class="empty-mark">籤</div><h3>分析するデータがありません</h3><p>最新の当せん結果を取得するか、CSVを取り込むと分析が始まります。</p><div class="empty-btns"><button class="primary" data-action="sync">最新結果を取得</button><button class="ghostbtn" data-action="tab" data-tab="data">データを追加</button><button class="minighost" data-action="seedDemo">デモで試す</button></div></div>';
 }
 
@@ -965,7 +990,7 @@ function renderAnalysis(){
   if(state.anaView==='backtest') return h+renderBacktest();
   if(state.anaView==='similar')  return h+renderSimilar();
   h+='<div class="lead"><b>'+a.count+'</b> 回分の'+cfg.name+'抽選結果を分析中</div>';
-  if(a.noDate) h+='<div class="warnbox"><b>日付のない履歴が '+a.noDate+' 件あります。</b>「ご無沙汰番号」は抽せん日順に数えるため、これらは最も古い扱いになり結果が不正確になります。</div>';
+  if(a.noDate) h+='<div class="warnbox"><b>日付のない履歴が '+a.noDate+' 件あります。</b>「ご無沙汰番号」は回号・抽せん日の順に数えるため、回号も日付もない回の位置が定まらず結果が不正確になります。</div>';
   h+=randomnessHTML(a,cfg);
   h+=card('出現ヒートマップ','色が濃く明るいほど出現回数が多い番号',heatHTML(a,cfg)+'<div class="legend"><span>少ない</span><i class="legbar"></i><span>多い</span></div>');
   const hot=a.hot.map(x=>'<div class="rb">'+ballHTML(x.n,'gold',38)+'<em>'+x.f+'回</em></div>').join('');
@@ -1110,7 +1135,8 @@ function renderBacktest(){
       +'特定の番号帯に偏った戦略は、その帯の出方が偏った期間では同じ方向にまとめてずれるため、'
       +'口数を増やしても差は縮みません。履歴が増えるほど理論値に近づきます。</div>';
   }
-  h+=card('数値で見る','3個以上一致＝最下位等以上の当せん / σ＝理論値からのずれ（標準誤差の何倍か。5戦略同時比較なので2.6σ未満なら誤差の範囲）',
+  const hitNote=cfg.key==='loto6'?'3個以上一致＝5等以上の当せん':'3個以上一致（ロト7は3個一致だけでは当せんせず、6等にはボーナス数字の一致も必要）';
+  h+=card('数値で見る',hitNote+' / σ＝理論値からのずれ（標準誤差の何倍か。5戦略同時比較なので2.6σ未満なら誤差の範囲）',
     '<div class="btwrap"><table class="ptable"><thead><tr><th>戦略</th><th style="text-align:right">平均一致</th>'
     +'<th style="text-align:right">3個以上一致率</th><th style="text-align:right">ずれ</th></tr></thead><tbody>'+tr+'</tbody></table></div>'
     +concl);
@@ -1346,7 +1372,8 @@ function syncCardHTML(cfg){
   let txt;
   if(info) txt='配信データ更新日 <b>'+esc(info.updated||'不明')+'</b>'+(info.latest?'（最新 第'+info.latest+'回）':'')+'<br>収録 '+info.total+'回分 / 最終確認 '+esc(String(info.at).slice(0,16).replace('T',' '));
   else txt='まだ取得していません。<code>data/'+cfg.key+'.json</code> が公開されていれば、ボタン一つで最新の当せん結果を追記します。';
-  const err=state.syncError?'<div class="warnbox">'+esc(state.syncError)+'</div>':'';
+  const se=state.syncError[cfg.key];
+  const err=se?'<div class="warnbox">'+esc(se)+'</div>':'';
   return card('最新の当せん結果を取得','GitHub Actions が定期更新する data/'+cfg.key+'.json を読み込みます（重複は自動スキップ）',
     '<div class="syncbar">'+btn+auto+'</div><p class="syncinfo" style="margin-top:12px">'+txt+'</p>'+err);
 }
@@ -1395,7 +1422,7 @@ function renderData(){
   const addrow='<div class="addrow"><input type="date" id="dateIn" class="datein" value="'+state.date+'"><button class="minighost" data-action="randomSel">おまかせ</button><button class="minighost" data-action="clearSel">クリア</button><button class="primary" data-action="add"'+(state.sel.length!==cfg.pick?' disabled':'')+'>追加</button></div>';
   h+=card('当選番号を手入力','本数字を '+cfg.pick+' 個タップ ('+state.sel.length+'/'+cfg.pick+')','<div class="picker">'+pk+'</div>'+bonusUI+addrow);
 
-  const rows=[...state.store[state.game]].sort(byDateDesc);
+  const rows=[...state.store[state.game]].sort(byChronoDesc);
   const hasAny=state.store.loto6.length||state.store.loto7.length;
   const tools='<div class="toolrow"><button class="minighost" data-action="seedDemo">デモデータ生成</button>'+(rows.length?'<button class="minidanger" data-action="clearAll">'+cfg.name+'を削除</button>':'')+(hasAny?'<button class="minidanger" data-action="resetAll">両方リセット</button>':'')+'</div>';
   // 1,600件超を毎回全部描くと、数字を1つタップするたびに再描画が1秒前後かかるので小分けにする
@@ -1581,7 +1608,7 @@ document.addEventListener('click',e=>{
         if(!confirm('第'+round+'回はすでに履歴にあります。このまま保存しますか?'))return;
       }
       state.store[state.game]=state.store[state.game].map(d=>d.id===e.id
-        ? {...d,round:Number.isInteger(round)?round:null,date,numbers:nums,bonus} : d);
+        ? {...d,round:Number.isInteger(round)?round:null,date,numbers:nums,bonus,edited:true} : d);
       state.edit=null; state.bt=null; save(); flash('この回を更新しました'); return;
     }
     case 'importPaste': { const ta=document.getElementById('importText'); if(ta)state.pasteText=ta.value; importData(state.pasteText); return; }
