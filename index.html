@@ -345,7 +345,7 @@ function bestResult(tk,draws,cfg){
 /* ===== 状態 ===== */
 let state={game:'loto6',store:{loto6:[],loto7:[]},tickets:{loto6:[],loto7:[]},tab:'analysis',
   sel:[],bsel:[],tsel:[],showBonus:false,date:todayISO(),strategy:'random',sets:[],excludePast:false,
-  importMode:'merge',showNote:true,flash:'',pasteText:'',anaView:'basic',edit:null,bt:null,btRunning:false,simSel:[],simMatch:0,simShape:100,simSort:'match',simLimit:200,simFrom:'',simExcludeId:'',
+  importMode:'merge',showNote:true,flash:'',pasteText:'',anaView:'basic',edit:null,bt:null,btRunning:false,simSel:[],simMatch:0,simShape:100,simSort:'match',simLimit:200,histLimit:100,simFrom:'',simExcludeId:'',
   autoSync:true,syncing:false,syncInfo:{loto6:null,loto7:null},lastWarn:'',syncError:''};
 
 const LS={d6:'lotolab-loto6',d7:'lotolab-loto7',t6:'lotolab-tk-loto6',t7:'lotolab-tk-loto7',
@@ -612,6 +612,7 @@ function importData(text){
     state.store[state.game]=clean;
     msg=clean.length+'件を取り込みました（置き換え）';
   }
+  state.bt=null;
   if(mine.noDate) msg+=' / 日付を読み取れなかった行 '+mine.noDate+'件';
   state.lastWarn = mine.noDate ? '日付を読み取れなかった行が'+mine.noDate+'件あります。「ご無沙汰番号」は抽せん日の順序を使うため、日付欠落があると正しく計算できません。西暦(2026/5/30)か和暦(令和8年5月30日 / R8.5.30)の列が含まれるファイルを取り込むか、手動で日付を補ってください。' : '';
   save(); flash(msg);
@@ -627,6 +628,7 @@ async function readFile(file){
 }
 
 /* ===== 自動取り込み（同一オリジンの data/*.json） ===== */
+const _syncedThisSession={loto6:false,loto7:false};
 async function syncRemote(opts){
   opts=opts||{};
   if(state.syncing)return;
@@ -644,6 +646,8 @@ async function syncRemote(opts){
     // 「未配置」と混同すると原因が分からなくなるので区別する。
     if(!parsed||!parsed.draws.length) throw new Error('emptyfile');
     const added=mergeDraws(gameKey,parsed.draws);
+    if(added) state.bt=null;
+    _syncedThisSession[gameKey]=true;
     state.syncInfo[gameKey]={updated:j.updated||'',latest:j.latestRound||null,total:parsed.draws.length,at:new Date().toISOString()};
     state.syncError='';
     save();
@@ -1394,8 +1398,13 @@ function renderData(){
   const rows=[...state.store[state.game]].sort(byDateDesc);
   const hasAny=state.store.loto6.length||state.store.loto7.length;
   const tools='<div class="toolrow"><button class="minighost" data-action="seedDemo">デモデータ生成</button>'+(rows.length?'<button class="minidanger" data-action="clearAll">'+cfg.name+'を削除</button>':'')+(hasAny?'<button class="minidanger" data-action="resetAll">両方リセット</button>':'')+'</div>';
+  // 1,600件超を毎回全部描くと、数字を1つタップするたびに再描画が1秒前後かかるので小分けにする
+  const shown=rows.slice(0,state.histLimit);
+  const more=rows.length>shown.length
+    ? '<div class="addrow" style="margin-top:12px"><button class="ghostbtn" data-action="histMore">さらに'
+      +Math.min(100,rows.length-shown.length)+'件表示（残り'+(rows.length-shown.length)+'件）</button></div>' : '';
   const histBody = rows.length===0 ? '<p class="muted">まだ履歴がありません。</p>' :
-    '<div class="hist">'+rows.map(d=> d.id===(state.edit&&state.edit.id) ? editBoxHTML(cfg) :
+    '<div class="hist">'+shown.map(d=> d.id===(state.edit&&state.edit.id) ? editBoxHTML(cfg) :
       ('<div class="histrow">'+
       (d.round!=null?'<span class="hround">'+d.round+'回</span>':'<span class="hround"></span>')+
       '<span class="hdate">'+fmtDate(d.date)+'</span><div class="hballs">'+
@@ -1403,8 +1412,8 @@ function renderData(){
       (d.bonus&&d.bonus.length?'<span class="bsep">+</span>'+d.bonus.map(n=>ballHTML(n,'cold',24)).join(''):'')+
       '</div><button class="edit" data-action="histSimilar" data-id="'+d.id+'" title="この回に似た回を探す">🔍</button>'+
       '<button class="edit" data-action="editStart" data-id="'+d.id+'" title="編集">✎</button>'+
-      '<button class="del" data-action="del" data-id="'+d.id+'">×</button></div>')).join('')+'</div>';
-  h+=card('履歴 ('+rows.length+'件)','新しい順',tools+histBody);
+      '<button class="del" data-action="del" data-id="'+d.id+'">×</button></div>')).join('')+'</div>'+more;
+  h+=card('履歴 ('+rows.length+'件)','新しい順'+(more?'（'+shown.length+'件を表示中）':''),tools+histBody);
 
   const modeSel='<div class="chiprow"><span class="modelbl">取り込み方法</span><button class="chip'+(state.importMode==='merge'?' on':'')+'" data-action="setImportMode" data-mode="merge">追記（マージ）</button><button class="chip'+(state.importMode==='replace'?' on':'')+'" data-action="setImportMode" data-mode="replace">置き換え</button></div>';
   const warn=state.lastWarn?'<div class="warnbox">'+esc(state.lastWarn)+'</div>':'';
@@ -1449,8 +1458,9 @@ document.addEventListener('click',e=>{
   const t=e.target.closest('[data-action]'); if(!t)return;
   const a=t.dataset.action; const cfg=GAMES[state.game];
   switch(a){
-    case 'game': state.game=t.dataset.game; state.sel=[]; state.bsel=[]; state.tsel=[]; state.sets=[]; state.lastWarn=''; state.edit=null; state.bt=null; state.simSel=[]; state.simFrom=''; state.simExcludeId=''; state.simLimit=200;
-      if(state.autoSync && !state.syncInfo[state.game]) setTimeout(()=>syncRemote({silent:true}),0);
+    case 'game': state.game=t.dataset.game; state.sel=[]; state.bsel=[]; state.tsel=[]; state.sets=[]; state.lastWarn=''; state.edit=null; state.bt=null; state.simSel=[]; state.simFrom=''; state.simExcludeId=''; state.simLimit=200; state.histLimit=100;
+      // syncInfo は保存されるので「一度でも取得したか」で判定すると、2回目以降の起動で新着を取りに行かなくなる
+      if(state.autoSync && !_syncedThisSession[state.game]) setTimeout(()=>syncRemote({silent:true}),0);
       break;
     case 'tab': state.tab=t.dataset.tab; break;
     case 'closeNote': state.showNote=false; save(); break;
@@ -1471,8 +1481,8 @@ document.addEventListener('click',e=>{
       state.sel=[]; state.bsel=[]; state.date=todayISO(); save(); flash('当選番号を追加しました'); return;
     }
     case 'del': state.store[state.game]=state.store[state.game].filter(d=>d.id!==t.dataset.id); if(state.edit&&state.edit.id===t.dataset.id)state.edit=null; state.bt=null; save(); break;
-    case 'clearAll': if(!confirm(cfg.name+'の履歴をすべて削除しますか?'))return; state.store[state.game]=[]; save(); break;
-    case 'resetAll': if(!confirm('ロト6・ロト7の履歴をすべて削除します。よろしいですか?'))return; state.store={loto6:[],loto7:[]}; state.sel=[]; state.bsel=[]; state.sets=[]; save(); flash('すべての履歴を削除しました'); return;
+    case 'clearAll': if(!confirm(cfg.name+'の履歴をすべて削除しますか?'))return; state.store[state.game]=[]; state.edit=null; state.bt=null; save(); break;
+    case 'resetAll': if(!confirm('ロト6・ロト7の履歴をすべて削除します。よろしいですか?'))return; state.store={loto6:[],loto7:[]}; state.sel=[]; state.bsel=[]; state.sets=[]; state.edit=null; state.bt=null; save(); flash('すべての履歴を削除しました'); return;
     case 'seedDemo': {
       // 既存履歴がある場合は必ず確認する（誤タップでの全消去を防ぐ）
       const cur=state.store[state.game].length;
@@ -1484,7 +1494,7 @@ document.addEventListener('click',e=>{
         const bonus=pickRandom(cfg.max,cfg.bonus,new Set(main));
         r.push({id:'demo'+i+'_'+rid(),round:null,date:dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'),numbers:main,bonus});
       }
-      state.store[state.game]=r; save(); flash('デモデータ40回分を生成しました（実際の当せん結果ではありません）'); return;
+      state.store[state.game]=r; state.edit=null; state.bt=null; save(); flash('デモデータ40回分を生成しました（実際の当せん結果ではありません）'); return;
     }
     case 'strategy': state.strategy=t.dataset.strat; break;
     case 'toggleExclude': state.excludePast=!state.excludePast; break;
@@ -1512,6 +1522,7 @@ document.addEventListener('click',e=>{
     case 'simShape': state.simShape=+t.dataset.v; state.simLimit=200; break;
     case 'simSort':  state.simSort=t.dataset.v;  state.simLimit=200; break;
     case 'simMore':  state.simLimit+=200; break;
+    case 'histMore': state.histLimit+=100; break;
     case 'simFromDiag': {
       state.simSort='match'; state.simMatch=0; state.simShape=100; state.simLimit=200;
       if(state.tsel.length!==cfg.pick)return;
@@ -1601,7 +1612,8 @@ document.addEventListener('input',e=>{
 });
 
 load(); render();
-if(state.autoSync) syncRemote({silent:true});
+// 起動時は両方のゲームを取りに行く（表示中でない方も新着を取り込むため）。同時には走れないので順番に
+if(state.autoSync) syncRemote({silent:true,game:'loto6'}).then(()=>syncRemote({silent:true,game:'loto7'}));
 
 </script>
 <script>
@@ -1617,9 +1629,12 @@ if("serviceWorker" in navigator){
         });
       });
     }).catch(function(){});
+    // 初回訪問では clients.claim() でも controllerchange が起きる。そこで再読み込みすると
+    // 起動直後の自動取得が中断されるので、すでに旧版に制御されていたときだけ再読み込みする
+    var hadController=!!navigator.serviceWorker.controller;
     var reloaded=false;
     navigator.serviceWorker.addEventListener("controllerchange",function(){
-      if(reloaded)return; reloaded=true; location.reload();
+      if(!hadController||reloaded)return; reloaded=true; location.reload();
     });
   });
 }

@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 /** 取得フロー全体の検証（通信はモック）:  node tools/test-fetch.mjs */
 import { GAMES, updateGame, parseIndex, parseRound } from './update-loto.mjs';
+import { mkdtempSync } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+// 本物の data/ を読むと、データが溜まった時点で「すでに最新」になりテストが成り立たない。
+// 空の一時ディレクトリを手元データとして使う
+const dataDir = mkdtempSync(path.join(os.tmpdir(), 'lotolab-fetch-test-'));
 
 // Shift-JIS でのエンコードは iconv-lite がある場合だけ検証する
 let iconv = null;
@@ -42,7 +48,7 @@ globalThis.fetch=async(url)=>{
 };
 
 console.log('[通しテスト: 目次 → 回別 → マージ]');
-const r1=await updateGame(L6,{dryRun:true,limit:150,back:0});
+const r1=await updateGame(L6,{dryRun:true,dataDir,limit:150,back:0});
 ok('112回すべて新規取得', r1.added===112, 'added='+r1.added);
 ok('リクエスト数 = 目次1 + 回別112', reqs===113, 'reqs='+reqs);
 
@@ -55,7 +61,7 @@ ok((iconv?'Shift-JIS':'UTF-8')+'でも和暦日付を読める', d && /^2026-07-
 
 console.log('\n[--limit で1回あたりの取得数を絞れる]');
 reqs=0;
-const r2=await updateGame(L6,{dryRun:true,limit:10,back:0});
+const r2=await updateGame(L6,{dryRun:true,dataDir,limit:10,back:0});
 ok('10件で打ち切る', r2.added===10, 'added='+r2.added);
 ok('リクエストも11回だけ', reqs===11, 'reqs='+reqs);
 
@@ -63,7 +69,7 @@ console.log('\n[一時的なネットワーク不調はリトライで吸収す�
 const orig=globalThis.fetch;
 let n=0;
 globalThis.fetch=async(u)=>{ n++; if(n%3===0) throw new Error('network'); return orig(u); };
-const r3=await updateGame(L6,{dryRun:true,limit:30,back:0});
+const r3=await updateGame(L6,{dryRun:true,dataDir,limit:30,back:0});
 ok('3回に1回失敗しても大半を回収して続行', r3.added>=28, 'added='+r3.added);
 ok('ブラウザ経由に切り替わっていない', true);
 
@@ -73,7 +79,7 @@ globalThis.fetch=async(u)=>{
   if(/A102(2124|2123)\.CSV$/.test(s)) return {ok:false,status:404,arrayBuffer:async()=>new ArrayBuffer(0)};
   return orig(u);
 };
-const r4=await updateGame(L6,{dryRun:true,limit:20,back:0});
+const r4=await updateGame(L6,{dryRun:true,dataDir,limit:20,back:0});
 ok('欠番2回を除いて取得', r4.added===18, 'added='+r4.added);
 
 console.log('\n=== '+pass+' passed / '+fail+' failed ===');
