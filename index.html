@@ -155,7 +155,8 @@ html,body{margin:0;background:#0c0b10;-webkit-text-size-adjust:100%}
 .tlose{background:rgba(255,255,255,.05);color:var(--mut);border:1px solid var(--line2)}
 .tmid{background:rgba(230,181,62,.12);color:var(--gold2);border:1px solid rgba(230,181,62,.3)}
 /* ===== 比較チャート（実測 vs 理論値） ===== */
-.subnav{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:2px}
+.subnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:2px}
+.subnav .chip{padding:9px 11px}
 .cmp{display:flex;flex-direction:column;gap:10px}
 .cmprow{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center}
 .cmplbl{color:var(--mut);font-family:var(--f-disp);font-size:11.5px;text-align:right;min-width:30px}
@@ -219,6 +220,16 @@ html,body{margin:0;background:#0c0b10;-webkit-text-size-adjust:100%}
 @keyframes sp{to{transform:rotate(360deg)}}
 .warnbox{background:rgba(220,150,80,.09);border:1px solid rgba(220,150,80,.28);border-radius:12px;padding:11px 13px;font-size:11.5px;line-height:1.65;color:#efd0ae;margin-top:10px}
 .warnbox b{color:#f3b877}
+/* ===== 出目表 ===== */
+.dmwrap{position:relative;margin-top:4px}
+.dmplot{display:block;max-width:100%;height:auto;touch-action:manipulation;cursor:crosshair;user-select:none;-webkit-user-select:none}
+.dmplot text{font-family:var(--f-disp);font-variant-numeric:tabular-nums}
+.dmtip{position:absolute;z-index:4;pointer-events:none;min-width:150px;max-width:240px;padding:8px 10px;border-radius:10px;
+  background:#0f0e14;border:1px solid rgba(255,255,255,.12);box-shadow:0 8px 24px rgba(0,0,0,.5);font-size:11px;line-height:1.6;color:var(--mut)}
+.dmtip b{color:var(--txt);font-family:var(--f-disp);font-size:12.5px;font-weight:600;margin-right:6px}
+.cmpleg i.dot{border-radius:50%}
+.cmpleg i.ring{border-radius:50%;background:none;border:2px solid #9a948a}
+.nb.bo{background:none;border:1.5px solid #9a948a}
 </style>
 </head>
 <body>
@@ -357,7 +368,7 @@ function bestResult(tk,draws,cfg){
 /* ===== 状態 ===== */
 let state={game:'loto6',store:{loto6:[],loto7:[]},tickets:{loto6:[],loto7:[]},tab:'analysis',
   sel:[],bsel:[],tsel:[],showBonus:false,date:todayISO(),strategy:'random',sets:[],excludePast:false,
-  importMode:'merge',showNote:true,flash:'',pasteText:'',anaView:'basic',edit:null,bt:null,btRunning:false,simSel:[],simMatch:0,simShape:100,simSort:'match',simLimit:200,histLimit:100,simFrom:'',simExcludeId:'',
+  importMode:'merge',showNote:true,flash:'',pasteText:'',anaView:'basic',edit:null,bt:null,btRunning:false,simSel:[],simMatch:0,simShape:100,simSort:'match',simLimit:200,histLimit:100,dmWin:50,dmBonus:true,dmTable:false,simFrom:'',simExcludeId:'',
   autoSync:true,syncing:false,syncInfo:{loto6:null,loto7:null},lastWarn:'',syncError:{loto6:'',loto7:''}};
 
 const LS={d6:'lotolab-loto6',d7:'lotolab-loto7',t6:'lotolab-tk-loto6',t7:'lotolab-tk-loto7',
@@ -953,6 +964,18 @@ function simFilterSort(res,st){
   return c;
 }
 
+/* ===== 出目表 =====
+   直近 win 回を新しい順に並べ、数字ごとの出現回数と「最後に出てから何回前か」を数える */
+function chartData(draws,cfg,win){
+  const rows=[...draws].sort(byChronoDesc).slice(0,win);
+  const count=new Array(cfg.max+1).fill(0), bcount=new Array(cfg.max+1).fill(0), last=new Array(cfg.max+1).fill(-1);
+  rows.forEach((d,i)=>{
+    d.numbers.forEach(n=>{ count[n]++; if(last[n]<0) last[n]=i; });
+    (d.bonus||[]).forEach(n=>{ bcount[n]++; });
+  });
+  return {rows,count,bcount,last,exp:rows.length*cfg.pick/cfg.max,maxCount:Math.max(0,...count.slice(1))};
+}
+
 /* ===== HTML パーツ ===== */
 function ballHTML(n,tone,size=38){return '<span class="ball ball-'+tone+'" style="width:'+size+'px;height:'+size+'px;font-size:'+(size*0.42).toFixed(1)+'px">'+n+'</span>';}
 /* 出現頻度は「大きさ」の表現なので逐次ランプ（単一色相・明度単調）にする。
@@ -983,12 +1006,13 @@ function emptyHTML(){
 function renderAnalysis(){
   const cfg=GAMES[state.game]; const a=analyzeCached(state.store[state.game],cfg);
   if(a.count===0 && state.anaView!=='similar') return emptyHTML();
-  const V=[['basic','基本'],['deep','詳細'],['backtest','戦略の検証'],['similar','似た回']];
+  const V=[['basic','基本'],['chart','出目表'],['deep','詳細'],['backtest','戦略の検証'],['similar','似た回']];
   let h='<div class="subnav">'+V.map(v=>'<button class="chip'+(state.anaView===v[0]?' on':'')
       +'" data-action="anaView" data-view="'+v[0]+'">'+v[1]+'</button>').join('')+'</div>';
   if(state.anaView==='deep') return h+renderDeep();
   if(state.anaView==='backtest') return h+renderBacktest();
   if(state.anaView==='similar')  return h+renderSimilar();
+  if(state.anaView==='chart')    return h+renderChart();
   h+='<div class="lead"><b>'+a.count+'</b> 回分の'+cfg.name+'抽選結果を分析中</div>';
   if(a.noDate) h+='<div class="warnbox"><b>日付のない履歴が '+a.noDate+' 件あります。</b>「ご無沙汰番号」は回号・抽せん日の順に数えるため、回号も日付もない回の位置が定まらず結果が不正確になります。</div>';
   h+=randomnessHTML(a,cfg);
@@ -1230,6 +1254,145 @@ function renderDiagnosis(nums,cfg){
 }
 
 function pctText(p){ return p<1 ? '上位 '+p.toFixed(1)+'%' : '上位 '+Math.ceil(p)+'%'; }
+
+/* 出目表: 行＝抽せん回（上が最新）、列＝数字。下に、同じ範囲での数字ごとの出現回数を並べる。
+   文字の大きさを保つため、viewBox で縮めずにカードの幅から1マスの大きさを決めて描く */
+let _dm=null;   // ホバー用に、最後に描いた出目表の寸法とデータを持っておく
+function chartAvail(){
+  const root=document.getElementById('root');
+  // .lab の左右余白 16px×2、カードの枠 1px×2 と余白 16px×2 を引いた幅
+  return Math.max(280,Math.min(728,(root&&root.clientWidth?root.clientWidth:414)-32-34));
+}
+function renderChart(){
+  const cfg=GAMES[state.game]; const draws=state.store[state.game];
+  const chip=(act,val,cur,label)=>'<button class="chip'+(String(cur)===String(val)?' on':'')+'" data-action="'+act+'" data-v="'+val+'">'+label+'</button>';
+  let h='<div class="chiprow" style="margin-bottom:0">'
+    +chip('dmWin',30,state.dmWin,'直近30回')+chip('dmWin',50,state.dmWin,'直近50回')+chip('dmWin',100,state.dmWin,'直近100回')
+    +'<button class="chip'+(state.dmBonus?' on':'')+'" data-action="dmBonus">ボーナス数字 '+(state.dmBonus?'ON':'OFF')+'</button>'
+    +'<button class="chip" data-action="dmTable">'+(state.dmTable?'チャートで見る':'表で見る')+'</button></div>';
+  const c=chartData(draws,cfg,state.dmWin), N=c.rows.length;
+  const roundTxt=d=>d.round!=null?'第'+d.round+'回':'—';
+
+  // 数字ごとの集計は、チャートでも表でも同じ文で添える
+  const top=[],low=[],zero=[];
+  for(let n=1;n<=cfg.max;n++){ if(c.count[n]===c.maxCount) top.push(n); if(c.count[n]===0) zero.push(n); }
+  const minC=Math.min(...c.count.slice(1).filter(v=>v>0));
+  for(let n=1;n<=cfg.max;n++) if(c.count[n]===minC) low.push(n);
+  const list=a=>a.length>4?a.slice(0,4).join('・')+' ほか'+(a.length-4)+'個':a.join('・');
+  const summary='<p class="rnote">最多 <b style="color:var(--txt)">'+list(top)+'</b>（'+(top.length>1?'各':'')+c.maxCount+'回）'
+    +(isFinite(minC)?' / 最少 <b style="color:var(--txt)">'+list(low)+'</b>（'+(low.length>1?'各':'')+minC+'回）':'')
+    +(zero.length?' / 一度も出ていない <b style="color:var(--txt)">'+list(zero)+'</b>':'')+'</p>';
+  const note='<p class="rnote">縦に点が続く列は続けて出た数字、空白が続く列はしばらく出ていない数字です。'
+    +'どちらも次回の出やすさとは関係ありません（どの数字も毎回 '+cfg.pick+'/'+cfg.max+' = '+(cfg.pick/cfg.max*100).toFixed(1)+'%）。</p>';
+
+  if(state.dmTable){
+    _dm=null;
+    const tr=c.rows.map(d=>'<tr><td class="whn"><b>'+roundTxt(d)+'</b><span>'+fmtDate(d.date)+'</span></td>'
+      +'<td><span class="nbrow">'+d.numbers.map(n=>'<i class="nb hit">'+n+'</i>').join('')+'</span></td>'
+      +'<td><span class="nbrow">'+(d.bonus||[]).map(n=>'<i class="nb bo">'+n+'</i>').join('')+'</span></td></tr>').join('');
+    let ct='';
+    for(let n=1;n<=cfg.max;n++) ct+='<tr><td class="n">'+n+'</td><td class="n">'+c.count[n]+' 回</td>'
+      +'<td class="n" style="color:var(--mut)">'+(c.last[n]<0?'—':c.last[n]===0?'最新回':c.last[n]+'回前')+'</td></tr>';
+    return h+card('出目表（表）','直近'+N+'回（新しい順）',
+        '<div class="btwrap"><table class="ptable simt"><thead><tr><th>回・抽せん日</th><th>本数字</th><th>ボーナス</th></tr></thead><tbody>'+tr+'</tbody></table></div>')
+      +card('数字ごとの出現回数','直近'+N+'回での本数字としての出現 / 理論値 '+c.exp.toFixed(1)+'回',
+        '<table class="ptable"><thead><tr><th style="text-align:right">数字</th><th style="text-align:right">出現</th><th style="text-align:right">最後に出てから</th></tr></thead><tbody>'+ct+'</tbody></table>'+summary);
+  }
+
+  // --- 寸法 ---
+  const avail=chartAvail();
+  const labW=30, cell=Math.min(16,Math.floor((avail-labW)/cfg.max*10)/10);
+  const gx=labW, gy=18, gw=cell*cfg.max, gh=cell*N, by=gy+gh+14, bh=56, W=Math.ceil(gx+gw+1), H=by+bh+4;
+  const X=n=>gx+(n-0.5)*cell, Y=i=>gy+(i+0.5)*cell;
+  const scale=Math.max(c.maxCount,c.exp)*1.1||1;
+  let g='';
+  // 10の位ごとの帯（列を目で追いやすくする）。グリッドは控えめに
+  for(let s=10;s<=cfg.max;s+=20){ const e=Math.min(cfg.max,s+9);
+    g+='<rect x="'+(gx+(s-1)*cell)+'" y="'+(gy-14)+'" width="'+((e-s+1)*cell)+'" height="'+(by+bh-gy+14)+'" fill="rgba(255,255,255,.028)"/>'; }
+  for(let i=10;i<N;i+=10) g+='<rect x="'+gx+'" y="'+(gy+i*cell-0.5)+'" width="'+gw+'" height="1" fill="rgba(255,255,255,.07)"/>';
+  g+='<rect x="'+gx+'" y="'+(by+bh-0.5)+'" width="'+gw+'" height="1" fill="rgba(255,255,255,.12)"/>';
+  // 見出し（狭いときは1と5の倍数だけ）と、10回ごとの回号
+  for(let n=1;n<=cfg.max;n++) if(cell>=13||n===1||n%5===0)
+    g+='<text x="'+X(n)+'" y="'+(gy-5)+'" text-anchor="middle" font-size="9" fill="#9a948a">'+n+'</text>';
+  for(let i=0;i<N;i+=10)
+    g+='<text x="'+(labW-5)+'" y="'+(Y(i)+3)+'" text-anchor="end" font-size="9" fill="#9a948a">'+(c.rows[i].round!=null?c.rows[i].round:'')+'</text>';
+  // ホバーで動かす十字の帯と、指している点の輪（最初は隠しておく）
+  g+='<rect class="dmrow" x="'+gx+'" width="'+gw+'" height="'+cell+'" fill="rgba(255,255,255,.07)" visibility="hidden"/>'
+    +'<rect class="dmcol" y="'+(gy-14)+'" width="'+cell+'" height="'+(by+bh-gy+14)+'" fill="rgba(255,255,255,.07)" visibility="hidden"/>';
+  // 点: 本数字は塗り、ボーナス数字は輪（色だけに頼らず形でも区別する）
+  const r1=Math.max(2.2,cell*0.34), r2=Math.max(1.8,cell*0.27);
+  c.rows.forEach((d,i)=>{
+    d.numbers.forEach(n=>{ g+='<circle cx="'+X(n)+'" cy="'+Y(i)+'" r="'+r1+'" fill="#b18827"/>'; });
+    if(state.dmBonus) (d.bonus||[]).forEach(n=>{ g+='<circle cx="'+X(n)+'" cy="'+Y(i)+'" r="'+r2+'" fill="none" stroke="#9a948a" stroke-width="1.3"/>'; });
+  });
+  g+='<circle class="dmcur" r="'+(cell*0.5+1)+'" fill="none" stroke="#f2ede2" stroke-width="1.5" visibility="hidden"/>';
+  // 下段: 同じ範囲での出現回数（棒）と理論値（線）
+  const bw=Math.max(1.5,cell-2), br=Math.min(4,bw/2);
+  for(let n=1;n<=cfg.max;n++){
+    const v=c.count[n]; if(!v) continue;
+    const x=gx+(n-1)*cell+(cell-bw)/2, y=by+bh-bh*v/scale, b=by+bh;
+    g+='<path d="M'+x+','+b+'V'+(y+br)+'Q'+x+','+y+' '+(x+br)+','+y+'H'+(x+bw-br)+'Q'+(x+bw)+','+y+' '+(x+bw)+','+(y+br)+'V'+b+'Z" fill="#b18827"/>';
+  }
+  const ey=by+bh-bh*c.exp/scale;
+  g+='<rect x="'+gx+'" y="'+(ey-1)+'" width="'+gw+'" height="2" fill="#329acd"/>';
+  _dm={cfg,c,gx,gy,cell,by,bh,W,N,avail,roundTxt};
+
+  const svg='<svg class="dmplot" width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'" role="img" aria-label="出目表: 直近'+N+'回と数字1〜'+cfg.max+'の対応。「表で見る」で同じ内容を表で確認できます">'+g+'</svg>';
+  const legend='<div class="cmpleg"><span><i class="dot" style="background:var(--mark1)"></i>本数字</span>'
+    +(state.dmBonus?'<span><i class="ring"></i>ボーナス数字</span>':'')
+    +'<span><i style="background:var(--mark1)"></i>下段: 直近'+N+'回の出現回数</span>'
+    +'<span><i class="k2" style="background:var(--mark2)"></i>理論値 '+c.exp.toFixed(1)+'回</span></div>';
+  return h+card('出目表','直近'+N+'回（上が最新）。点や棒をタップすると、その回と数字の詳細が出ます',
+    '<div class="dmwrap">'+svg+'<div class="dmtip" hidden></div></div>'+legend+summary+note);
+}
+let _dmShown=false;
+function dmHide(){
+  if(!_dmShown) return; _dmShown=false;
+  const tip=document.querySelector('.dmtip'); if(tip) tip.hidden=true;
+  document.querySelectorAll('.dmrow,.dmcol,.dmcur').forEach(el=>el.setAttribute('visibility','hidden'));
+}
+/* 十字の帯でマスを示し、その回とその数字の情報を出す。値は textContent で入れる */
+function dmPointer(e){
+  const svg=e.target&&e.target.closest?e.target.closest('.dmplot'):null;
+  if(!svg||!_dm){ dmHide(); return; }
+  const {cfg,c,gx,gy,cell,by,bh,W,N,roundTxt}=_dm;
+  const rc=svg.getBoundingClientRect(), k=W/rc.width;
+  const x=(e.clientX-rc.left)*k, y=(e.clientY-rc.top)*k;
+  const n=Math.floor((x-gx)/cell)+1;
+  let i=-1;
+  if(y>=gy&&y<gy+N*cell) i=Math.floor((y-gy)/cell);
+  else if(!(y>=by-10&&y<=by+bh+4)){ dmHide(); return; }
+  if(n<1||n>cfg.max){ dmHide(); return; }
+  const set=(sel,attrs)=>{const el=svg.querySelector(sel); for(const a in attrs) el.setAttribute(a,attrs[a]);};
+  _dmShown=true;
+  set('.dmcol',{x:gx+(n-1)*cell,visibility:'visible'});
+  if(i>=0){ set('.dmrow',{y:gy+i*cell,visibility:'visible'}); set('.dmcur',{cx:gx+(n-0.5)*cell,cy:gy+(i+0.5)*cell,visibility:'visible'}); }
+  else{ set('.dmrow',{visibility:'hidden'}); set('.dmcur',{visibility:'hidden'}); }
+
+  const line=(strong,rest)=>{ const div=document.createElement('div');
+    if(strong){ const b=document.createElement('b'); b.textContent=strong; div.appendChild(b); }
+    if(rest) div.appendChild(document.createTextNode(rest)); return div; };
+  const lastTxt=c.last[n]<0?'直近'+N+'回では出ていない':c.last[n]===0?'最新回に出た':'最後に出たのは'+c.last[n]+'回前';
+  const lines=[];
+  if(i>=0){
+    const d=c.rows[i], bo=d.bonus||[];
+    lines.push(line(roundTxt(d),fmtDate(d.date)));
+    lines.push(line(d.numbers.join(' ')+(bo.length?' ＋ '+bo.join(' '):''),''));
+    lines.push(line(String(n),d.numbers.includes(n)?'この回に出た':bo.includes(n)?'この回のボーナス数字':'この回は出ていない'));
+  }else lines.push(line(String(n),''));
+  lines.push(line('','直近'+N+'回で'+c.count[n]+'回（理論値 '+c.exp.toFixed(1)+'回）'));
+  lines.push(line('',lastTxt));
+  const tip=svg.parentNode.querySelector('.dmtip');
+  tip.replaceChildren(...lines); tip.hidden=false; _dmShown=true;
+  // 指の下に隠れないよう、タッチでは上に、マウスでは右下に出す。枠からははみ出さない
+  const wr=svg.parentNode.getBoundingClientRect(), tw=tip.offsetWidth, th=tip.offsetHeight;
+  const px=e.clientX-wr.left, py=e.clientY-wr.top;
+  let left=px+14, top=e.pointerType==='touch'?py-th-18:py+14;
+  if(top<0) top=py+22;   // 上に入りきらない（上端付近をタップした）ときは指の下に出す
+  if(left+tw>wr.width) left=px-tw-14;
+  tip.style.left=Math.max(0,Math.min(wr.width-tw,left))+'px';
+  tip.style.top=Math.max(0,top)+'px';
+}
 
 function renderSimilar(){
   const cfg=GAMES[state.game]; const draws=state.store[state.game];
@@ -1550,6 +1713,9 @@ document.addEventListener('click',e=>{
     case 'simSort':  state.simSort=t.dataset.v;  state.simLimit=200; break;
     case 'simMore':  state.simLimit+=200; break;
     case 'histMore': state.histLimit+=100; break;
+    case 'dmWin':   state.dmWin=+t.dataset.v; break;
+    case 'dmBonus': state.dmBonus=!state.dmBonus; break;
+    case 'dmTable': state.dmTable=!state.dmTable; break;
     case 'simFromDiag': {
       state.simSort='match'; state.simMatch=0; state.simShape=100; state.simLimit=200;
       if(state.tsel.length!==cfg.pick)return;
@@ -1637,6 +1803,12 @@ document.addEventListener('input',e=>{
   if(state.edit&&e.target.id==='editDate')  state.edit.date=e.target.value;
   if(state.edit&&e.target.id==='editRound') state.edit.round=e.target.value.trim()===''?null:parseInt(e.target.value,10);
 });
+
+document.addEventListener('pointermove',dmPointer);
+document.addEventListener('pointerdown',dmPointer);
+// 幅が変わったら出目表を描き直す（スマホはスクロールでも resize が来るので、幅が変わったときだけ）
+let _rz; window.addEventListener('resize',()=>{ clearTimeout(_rz); _rz=setTimeout(()=>{
+  if(_dm && state.tab==='analysis' && state.anaView==='chart' && chartAvail()!==_dm.avail) render(); },150); });
 
 load(); render();
 // 起動時は両方のゲームを取りに行く（表示中でない方も新着を取り込むため）。同時には走れないので順番に

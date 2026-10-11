@@ -24,7 +24,7 @@ console.log('\n[1] 必要な関数が全て存在するか');
 const NEEDED = ['analyze', 'analyzeCached', 'deepAnalyze', 'backtest', 'makeTicket', 'generate',
   'renderAnalysis', 'renderGenerate', 'renderTickets', 'renderData', 'renderDeep', 'renderBacktest',
   'editBoxHTML', 'cmpRow', 'cmpRowSE', 'cmpLegend', 'verdict', 'parseTable', 'parseJson', 'parseImport',
-  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'diagnose', 'renderDiagnosis', 'similarSearch', 'shapeOf', 'simFilterSort', 'renderSimilar', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'uniformityTest', 'render'];
+  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'diagnose', 'renderDiagnosis', 'similarSearch', 'shapeOf', 'simFilterSort', 'renderSimilar', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'uniformityTest', 'chartData', 'renderChart', 'render'];
 const missing = NEEDED.filter((n) => !new RegExp(`function ${n}\\b`).test(script));
 ok(`${NEEDED.length}個の関数が定義済み`, missing.length === 0, `未定義: ${missing.join(', ')}`);
 
@@ -49,7 +49,7 @@ console.log('\n[4] アプリのパーサを実行して検証');
 const require = createRequire(import.meta.url);
 const core = script.slice(0, script.indexOf('/* ===== HTML パーツ ===== */')).replace("'use strict';", '');
 const tmp = path.join(ROOT, 'tools', '.app-core.cjs');
-writeFileSync(tmp, core + '\nmodule.exports={GAMES,parseImport,parseJson,normDate,score,comb,hyperP,chiP,deepAnalyze,backtest,analyze,makeTicket,diagnose,similarSearch,shapeOf,simFilterSort,uniformityTest,pickRandom,mergeDraws,state};');
+writeFileSync(tmp, core + '\nmodule.exports={GAMES,parseImport,parseJson,normDate,score,comb,hyperP,chiP,deepAnalyze,backtest,analyze,makeTicket,diagnose,similarSearch,shapeOf,simFilterSort,uniformityTest,pickRandom,mergeDraws,state,chartData};');
 const A = require(tmp);
 const L6 = A.GAMES.loto6, L7 = A.GAMES.loto7;
 
@@ -258,6 +258,24 @@ console.log('\n[8c] ご無沙汰番号は回号順で数える');
   eq('第1回の番号は2回前', a.gap[7], 2);
   eq('全回に回号があれば日付欠落の警告を出さない', a.noDate, 0);
   eq('回号も日付もない回があれば警告する', A.analyze([...draws, { id: 's', round: null, date: '', numbers: [20,21,22,23,24,25], bonus: [] }], L6).noDate, 4);
+}
+
+console.log('\n[8d] 出目表の集計');
+{
+  const draws = [
+    { id: 'a', round: 101, date: '2026-01-05', numbers: [1,2,3,4,5,6], bonus: [7] },
+    { id: 'c', round: 103, date: '2026-01-12', numbers: [1,10,11,12,13,14], bonus: [2] },
+    { id: 'b', round: 102, date: '2026-01-08', numbers: [2,20,21,22,23,24], bonus: [1] },
+  ];
+  const c = A.chartData(draws, L6, 2);
+  eq('直近の回だけを新しい順に', c.rows.map(d => d.round), [103, 102]);
+  eq('本数字の出現回数（範囲内だけ）', [c.count[1], c.count[2], c.count[3]], [1, 1, 0]);
+  eq('ボーナス数字は別に数える', [c.bcount[1], c.bcount[2], c.bcount[7]], [1, 1, 0]);
+  eq('最後に出てから何回前か（出ていなければ-1）', [c.last[1], c.last[2], c.last[3]], [0, 1, -1]);
+  ok('理論値 = 回数×pick/max', Math.abs(c.exp - 2 * 6 / 43) < 1e-12);
+  eq('最多の出現回数', c.maxCount, 1);
+  eq('範囲が履歴より広ければ全件', A.chartData(draws, L6, 50).rows.length, 3);
+  eq('出現回数の合計 = 回数×pick', A.chartData(draws, L6, 50).count.reduce((a, b) => a + b, 0), 18);
 }
 
 console.log('\n[9] 詳細分析');
