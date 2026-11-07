@@ -24,7 +24,7 @@ console.log('\n[1] 必要な関数が全て存在するか');
 const NEEDED = ['analyze', 'analyzeCached', 'deepAnalyze', 'backtest', 'makeTicket', 'generate',
   'renderAnalysis', 'renderGenerate', 'renderTickets', 'renderData', 'renderDeep', 'renderBacktest',
   'editBoxHTML', 'cmpRow', 'cmpRowSE', 'cmpLegend', 'verdict', 'parseTable', 'parseJson', 'parseImport',
-  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'diagnose', 'renderDiagnosis', 'similarSearch', 'shapeOf', 'simFilterSort', 'renderSimilar', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'uniformityTest', 'chartData', 'renderChart', 'render'];
+  'normDate', 'mergeDraws', 'syncRemote', 'parseMizuhoRounds', 'diagnose', 'renderDiagnosis', 'similarSearch', 'shapeOf', 'simFilterSort', 'renderSimilar', 'exportCsv', 'exportJson', 'comb', 'hyperP', 'chiP', 'uniformityTest', 'chartData', 'renderChart', 'predEngine', 'nextDraw', 'popModel', 'payoutStats', 'ticketResults', 'importTickets', 'ticketNotice', 'addTicket', 'renderPredict', 'renderPop', 'render'];
 const missing = NEEDED.filter((n) => !new RegExp(`function ${n}\\b`).test(script));
 ok(`${NEEDED.length}個の関数が定義済み`, missing.length === 0, `未定義: ${missing.join(', ')}`);
 
@@ -49,7 +49,7 @@ console.log('\n[4] アプリのパーサを実行して検証');
 const require = createRequire(import.meta.url);
 const core = script.slice(0, script.indexOf('/* ===== HTML パーツ ===== */')).replace("'use strict';", '');
 const tmp = path.join(ROOT, 'tools', '.app-core.cjs');
-writeFileSync(tmp, core + '\nmodule.exports={GAMES,parseImport,parseJson,normDate,score,comb,hyperP,chiP,deepAnalyze,backtest,analyze,makeTicket,diagnose,similarSearch,shapeOf,simFilterSort,uniformityTest,pickRandom,mergeDraws,state,chartData};');
+writeFileSync(tmp, core + '\nmodule.exports={GAMES,parseImport,parseJson,normDate,score,comb,hyperP,chiP,deepAnalyze,backtest,analyze,makeTicket,diagnose,similarSearch,shapeOf,simFilterSort,uniformityTest,pickRandom,mergeDraws,state,chartData,predEngine,nextDraw,popModel,payoutStats,ticketResults,bestResult,importTickets,ticketNotice,prizeOf,PRED};');
 const A = require(tmp);
 const L6 = A.GAMES.loto6, L7 = A.GAMES.loto7;
 
@@ -235,13 +235,14 @@ console.log('\n[8b] 自動取得のマージ（公式データの訂正）');
     { round: 12, date: '2026-01-12', numbers: [30,31,32,33,34,35], bonus: [36] },
   ];
   S.store.loto6 = base();
-  eq('自動取得では訂正を反映し新しい回を追加', A.mergeDraws('loto6', remote, { update: true }), { added: 1, updated: 1 });
+  const pick2 = (r) => ({ added: r.added, updated: r.updated });
+  eq('自動取得では訂正を反映し新しい回を追加', pick2(A.mergeDraws('loto6', remote, { update: true })), { added: 1, updated: 1 });
   eq('訂正後の番号', S.store.loto6.find(d => d.round === 10).numbers, [1,2,3,4,5,40]);
   eq('訂正しても id は変わらない', S.store.loto6.find(d => d.round === 10).id, 'a');
   eq('手で直した回は上書きしない', S.store.loto6.find(d => d.round === 11).numbers, [8,9,10,11,12,13]);
-  eq('同じ内容を再取得しても変更なし', A.mergeDraws('loto6', remote, { update: true }), { added: 0, updated: 0 });
+  eq('同じ内容を再取得しても変更なし', pick2(A.mergeDraws('loto6', remote, { update: true })), { added: 0, updated: 0 });
   S.store.loto6 = base();
-  eq('ファイル取り込み(追記)では既存の回を上書きしない', A.mergeDraws('loto6', remote), { added: 1, updated: 0 });
+  eq('ファイル取り込み(追記)では既存の回を上書きしない', pick2(A.mergeDraws('loto6', remote)), { added: 1, updated: 0 });
   eq('既存の回はそのまま', S.store.loto6.find(d => d.round === 10).numbers, [1,2,3,4,5,6]);
 }
 
@@ -276,6 +277,157 @@ console.log('\n[8d] 出目表の集計');
   eq('最多の出現回数', c.maxCount, 1);
   eq('範囲が履歴より広ければ全件', A.chartData(draws, L6, 50).rows.length, 3);
   eq('出現回数の合計 = 回数×pick', A.chartData(draws, L6, 50).count.reduce((a, b) => a + b, 0), 18);
+}
+
+console.log('\n[10] 次回の予想（ウォークフォワード）');
+{
+  // 乱数を固定した公正な抽せん 600回。どの方法も理論値の近くに収まるはず
+  let seed = 99;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const fair = Array.from({ length: 600 }, (_, i) => {
+    const p = [...Array(43)].map((_, k) => k + 1);
+    for (let k = p.length - 1; k > 0; k--) { const j = Math.floor(rnd() * (k + 1)); [p[k], p[j]] = [p[j], p[k]]; }
+    return { id: 'f' + i, round: 1 + i, date: '2026-01-01', numbers: p.slice(0, 6).sort((a, b) => a - b), bonus: [p[6]] };
+  });
+  const pr = A.predEngine(fair, L6);
+  eq('検証は start 回目以降（600回なら200回目から400回分）', [pr.start, pr.N], [200, 400]);
+  eq('方法は8通り', pr.methods.length, A.PRED.length);
+  ok('次回の予想は各方法6個ずつ・重複なし', pr.methods.every(m => m.picks.length === 6 && new Set(m.picks).size === 6));
+  ok('公正な抽せんではどの方法も |z| < 3.5', pr.methods.every(m => Math.abs(m.z) < 3.5), pr.methods.map(m => m.key + ':' + m.z.toFixed(2)).join(' '));
+  ok('同じデータなら毎回同じ予想（同点の並びも固定）', JSON.stringify(A.predEngine(fair, L6).methods.map(m => m.picks)) === JSON.stringify(pr.methods.map(m => m.picks)));
+  // 2つの組を交互に出すデータ: 「前回と同じ」は毎回0個、「前回の次に多い」は学習後に全部当たる。
+  // 未来の回を覗き見ていれば「前回と同じ」も当たってしまうので、覗き見していないことの確認にもなる
+  const A6 = [1, 2, 3, 4, 5, 6], B6 = [21, 22, 23, 24, 25, 26];
+  const alt = Array.from({ length: 120 }, (_, i) => ({ id: 'a' + i, round: i + 1, date: '', numbers: i % 2 ? B6 : A6, bonus: [] }));
+  const pa = A.predEngine(alt, L6), get = (k) => pa.methods.find(m => m.key === k);
+  eq('前回と同じ: 交互のデータでは毎回0個', get('repeat').avg, 0);
+  eq('前回の次に多い: 交互の規則を学んで毎回6個', get('markov').avg, 6);
+  eq('次回の予想（最後は第120回=B → 次はA）', get('markov').picks, A6);
+  eq('出現回数が多い: 予想には A と B だけが並ぶ', get('hot').picks.every(n => A6.includes(n) || B6.includes(n)), true);
+}
+
+console.log('\n[11] 次回の抽せん日');
+{
+  eq('ロト6: 木曜の次は月曜', A.nextDraw([{ round: 2152, date: '2026-11-05', numbers: [1,2,3,4,5,6], bonus: [] }], L6).date, '2026-11-09');
+  eq('ロト6: 月曜の次は木曜', A.nextDraw([{ round: 2151, date: '2026-11-02', numbers: [1,2,3,4,5,6], bonus: [] }], L6).date, '2026-11-05');
+  eq('ロト7: 金曜の次は金曜', A.nextDraw([{ round: 702, date: '2026-11-06', numbers: [1,2,3,4,5,6,7], bonus: [] }], L7).date, '2026-11-13');
+  const nd = A.nextDraw([{ round: 701, date: '2026-10-30', numbers: [1,2,3,4,5,6,7], bonus: [], carry: 0 },
+                         { round: 702, date: '2026-11-06', numbers: [1,2,3,4,5,6,7], bonus: [], carry: 345678900 }], L7);
+  eq('次回の回号とキャリーオーバー', [nd.round, nd.carry], [703, 345678900]);
+  eq('履歴が無ければ null', A.nextDraw([], L6), null);
+}
+
+console.log('\n[12] 人気の推定');
+{
+  // 「7・1〜12 が人気、38〜43 が不人気、連番は人気」という人気を仕込んだ当せん口数を作り、推定で取り戻せるか
+  let seed = 5;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const truth = (n) => (n === 7 ? 0.35 : n <= 12 ? 0.12 : n >= 38 ? -0.15 : 0);
+  const P3 = A.hyperP(L6, 3), sales = 1.2e9;
+  const mk = (cnt) => Array.from({ length: cnt }, (_, i) => {
+    const p = [...Array(43)].map((_, k) => k + 1);
+    for (let k = p.length - 1; k > 0; k--) { const j = Math.floor(rnd() * (k + 1)); [p[k], p[j]] = [p[j], p[k]]; }
+    const nums = p.slice(0, 6).sort((a, b) => a - b);
+    let c = 0; for (let k = 1; k < 6; k++) if (nums[k] === nums[k - 1] + 1) c++;
+    const y = nums.reduce((a, n) => a + truth(n), 0) + 0.1 * c + (rnd() - 0.5) * 0.1;   // 小さな雑音
+    const w5 = Math.round(sales / 200 * P3 * Math.exp(y));
+    return { id: 'p' + i, round: i + 1, date: '2026-01-01', numbers: nums, bonus: [p[6]],
+             prize: [[0, 0], [3, 1e7], [200, 3e5], [10000, 7000], [w5, 1000]], sales, carry: 0 };
+  });
+  const pm = A.popModel(mk(600), L6);
+  ok('600回あれば推定できる', pm.ok);
+  ok('7 が最も人気', pm.ok && [...Array(43)].map((_, i) => i + 1).every(n => pm.beta[7] >= pm.beta[n]));
+  ok('1〜12 の平均 > 38〜43 の平均', pm.ok && (pm.beta.slice(1, 13).reduce((a, b) => a + b) / 12) > (pm.beta.slice(38, 44).reduce((a, b) => a + b) / 6));
+  ok('連番の効果を正しい向きで推定', pm.ok && pm.gamma > 0.05, 'gamma=' + (pm.ok && pm.gamma.toFixed(3)));
+  ok('交差検証の当てはまりが高い（雑音が小さいので）', pm.ok && pm.r2 > 0.8, 'r2=' + (pm.ok && pm.r2.toFixed(3)));
+  // 連番の無い2組で比べる: 人気の数字ばかりの組は、取り分の目安 exp(-rel) が小さい
+  ok('人気の組み合わせほど取り分の目安が小さい', pm.ok && Math.exp(-pm.rel([1, 3, 5, 7, 9, 11])) < Math.exp(-pm.rel([20, 25, 30, 38, 40, 43])));
+  eq('データが60回未満なら推定しない', A.popModel(mk(30), L6).ok, false);
+  eq('賞金データの無い回は使わない', A.popModel(mk(100).map(d => ({ ...d, prize: undefined })), L6).ok, false);
+}
+
+console.log('\n[13] 払戻し・キャリーオーバー');
+{
+  const d = (r, carry, w1, a1) => ({ round: r, date: '2026-01-0' + r, numbers: [1,2,3,4,5,6], bonus: [7],
+    prize: [[w1, a1], [0, 0], [0, 0], [0, 0], [100000, 1000]], sales: 1e9, carry });
+  const ps = A.payoutStats([d(1, 0, 0, 0), d(2, 3e8, 0, 0), d(3, 0, 2, 4e8)], L6);
+  eq('払戻率 = 当せん金の合計 ÷ 販売実績額', ps.list.map(x => +x.rate.toFixed(3)), [0.1, 0.1, 0.9]);
+  eq('前回のキャリーオーバーで分ける', [ps.nCarry, ps.nNoCarry], [1, 1]);
+  ok('キャリーオーバーがあった回の払戻率は 0.9', Math.abs(ps.avgCarry - 0.9) < 1e-9);
+}
+
+console.log('\n[14] マイ番号: 対象の回・回ごとの結果・金額');
+{
+  const draws = [
+    { id: 'x', round: 100, date: '2026-01-05', numbers: [1,2,3,4,5,6], bonus: [7], prize: [[0,0],[1,1e7],[10,3e5],[1000,6900],[1e5,1000]] },
+    { id: 'y', round: 101, date: '2026-01-08', numbers: [1,2,3,10,11,12], bonus: [13] },
+    { id: 'z', round: 102, date: '2026-01-12', numbers: [20,21,22,23,24,25], bonus: [26] },
+  ];
+  const tk1 = { id: 't', numbers: [1,2,3,4,30,31], since: '2026-01-01', from: 100, to: 100 };
+  const r1 = A.bestResult(tk1, draws, L6);
+  eq('対象の回だけを照合', r1.checked, 1);
+  eq('4個一致で4等・その回の金額', [r1.best.label, r1.best.amount], ['4等', 6900]);
+  const tk2 = { id: 'u', numbers: [1,2,3,40,41,42], since: '2026-01-01', from: 101, to: 105 };
+  const r2 = A.bestResult(tk2, draws, L6);
+  eq('継続5回: 抽せん済み2回・残り3回', [r2.checked, r2.pending], [2, 3]);
+  eq('賞金データの無い回は金額なし', r2.best.amount, null);
+  const legacy = { id: 'v', numbers: [1,2,3,40,41,42], since: '2026-01-06' };
+  eq('旧形式（登録日だけ）は登録日以降のすべて', A.bestResult(legacy, draws, L6).checked, 2);
+}
+
+console.log('\n[15] バックアップからのマイ番号の復元');
+{
+  A.state.tickets.loto6 = [{ id: 'k', numbers: [1,2,3,4,5,6], since: '2026-01-01', from: 10, to: 10 }];
+  const added = A.importTickets('loto6', [
+    { numbers: [1,2,3,4,5,6], since: '2026-01-01', from: 10, to: 10 },   // 既にある
+    { numbers: [6,5,4,3,2,1], since: '2026-01-01', from: 11, to: 15 },   // 対象の回が違うので別物
+    { numbers: [1,1,2,3,4,5], since: '2026-01-01' },                     // 重複番号
+    { numbers: [1,2,3,4,5,44], since: '2026-01-01' },                    // 範囲外
+    { numbers: [7,8,9,10,11,12], since: '2026/1/3' },                    // 旧形式・日付の書き方違い
+  ]);
+  eq('正しい2口だけ追加（重複・不正は除く）', added, 2);
+  eq('日付は正規化して保存', A.state.tickets.loto6[2].since, '2026-01-03');
+  eq('対象の回を保持', [A.state.tickets.loto6[1].from, A.state.tickets.loto6[1].to], [11, 15]);
+}
+
+console.log('\n[16] 新しい回の結果のお知らせ');
+{
+  A.state.store.loto6 = [
+    { id: 'a', round: 200, date: '2026-02-02', numbers: [1,2,3,4,5,6], bonus: [7], prize: [[0,0],[1,1e7],[10,3e5],[1000,6900],[1e5,1000]] },
+  ];
+  A.state.tickets.loto6 = [
+    { id: 'w', numbers: [1,2,3,4,20,21], since: '2026-01-30', from: 200, to: 200 },
+    { id: 'l', numbers: [30,31,32,33,34,35], since: '2026-01-30', from: 200, to: 204 },
+    { id: 'o', numbers: [1,2,3,4,5,6], since: '2026-01-30', from: 199, to: 199 },   // 対象外の回
+  ];
+  const nt = A.ticketNotice('loto6', [200]);
+  ok('当せんありとして知らせる', nt && nt.win);
+  ok('照合した口数と等級・金額を書く', nt && /2口を照合/.test(nt.text) && /4等（6,900円）/.test(nt.text), nt && nt.text);
+  A.state.tickets.loto6 = [{ id: 'l', numbers: [30,31,32,33,34,35], since: '2026-01-30', from: 200, to: 204 }];
+  ok('当せんなしも知らせる', A.ticketNotice('loto6', [200]).win === false);
+  A.state.tickets.loto6 = [];
+  eq('対象のマイ番号が無ければ知らせない', A.ticketNotice('loto6', [200]), null);
+}
+
+console.log('\n[17] 賞金データの取り込みとマージ');
+{
+  const good = { prize: [[0,0],[1,2],[3,4],[5,6],[7,1000]], sales: 100, carry: 0 };
+  eq('形の正しい賞金データは残す', A.prizeOf(good, L6).prize.length, 5);
+  eq('等級の数が違えば捨てる', A.prizeOf(good, L7), {});
+  eq('負の値や小数は捨てる', A.prizeOf({ prize: [[0,0],[1,2],[3,4],[5,6],[7,-1]] }, L6), {});
+  A.state.store.loto6 = [
+    { id: 'e', round: 300, date: '2026-03-02', numbers: [1,2,3,4,5,6], bonus: [7], edited: true },
+    { id: 'f', round: 301, date: '2026-03-05', numbers: [8,9,10,11,12,13], bonus: [14], ...good },
+  ];
+  const r = A.mergeDraws('loto6', [
+    { round: 300, date: '2026-03-02', numbers: [1,2,3,4,5,40], bonus: [7], ...good },   // 手で直した回: 番号は守り、賞金データだけ入れる
+    { round: 301, date: '2026-03-05', numbers: [8,9,10,11,12,13], bonus: [14] },         // 賞金データが無くても消さない
+  ], { update: true });
+  eq('賞金データの追加は「訂正」と分けて数える', [r.updated, r.filled], [0, 1]);
+  eq('手で直した回の番号は守る', A.state.store.loto6[0].numbers, [1,2,3,4,5,6]);
+  ok('手で直した回にも賞金データは入る', Array.isArray(A.state.store.loto6[0].prize));
+  ok('取り込む側に賞金データが無くても消さない', Array.isArray(A.state.store.loto6[1].prize));
+  eq('新しく入った回の回号を返す', A.mergeDraws('loto6', [{ round: 302, date: '2026-03-09', numbers: [1,2,3,4,5,6], bonus: [] }], { update: true }).addedRounds, [302]);
 }
 
 console.log('\n[9] 詳細分析');

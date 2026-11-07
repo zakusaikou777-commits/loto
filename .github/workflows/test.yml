@@ -1,0 +1,30 @@
+name: テスト
+
+# アプリと更新スクリプトのテスト（tools/test-*.mjs）を、変更のたびに自動で動かす。
+# 当せん番号の自動更新（data/ だけの変更）では動かさない。
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['data/**']
+  pull_request:
+    paths-ignore: ['data/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      # 追加のパッケージは不要（Playwright は取得の予備手段で、テストでは使わない）
+      - name: テストを実行
+        working-directory: tools
+        run: npm test

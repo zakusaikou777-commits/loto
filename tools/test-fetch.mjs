@@ -124,5 +124,50 @@ let err9=null;
 try{ await updateGame(L6,{dryRun:true,limit:150,back:0,dataDir:fixDir}); }catch(e){ err9=e; }
 ok('最新回のCSVがまだ公開されていない(404)だけなら失敗にしない', !err9, err9&&err9.message);
 
+console.log('\n[賞金データ: 持っていない回を上限の残りで取りに行き、読めた値は消さない]');
+{
+  const PRIZE=['２等,5口,12345600円','３等,264口,336800円','４等,13427口,6900円','５等,212459口,1000円','キャリーオーバー,0円'];
+  const withPrize=async(u)=>{ const s=String(u); if(s.endsWith('loto6.csv')) return orig(u);
+    const m=s.match(/A102(\d{4})\.CSV$/); const b=enc(mkRound(L6,+m[1])+'\r\n'+PRIZE.join('\r\n'));
+    reqs++; return {ok:true,status:200,arrayBuffer:async()=>b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength)}; };
+  const noPrize=orig;   // mkRound は１等と販売実績額しか無いので、賞金データとしては読めない
+  const dir=mkdtempSync(path.join(os.tmpdir(),'lotolab-prize-test-')), f=path.join(dir,'loto6.json');
+  const plain=j2.draws.map(({round,date,numbers,bonus})=>({round,date,numbers,bonus}));   // 賞金データを持たない既存データ
+  const load=()=>JSON.parse(readFileSync(f,'utf8')).draws;
+  const has=(ds)=>ds.filter(d=>Array.isArray(d.prize)).length;
+  writeFileSync(f,JSON.stringify({draws:plain}));
+
+  globalThis.fetch=withPrize; reqs=0;
+  const p1=await updateGame(L6,{dryRun:false,limit:50,back:0,dataDir:dir});
+  ok('上限50: 目次1 + 訂正の確認3回 + 賞金データ50回', reqs===54, 'reqs='+reqs);
+  ok('賞金データが53回分入る', p1.prize===53 && has(load())===53, JSON.stringify(p1)+' / '+has(load()));
+  ok('新しい回から順に埋まる', load().filter(d=>Array.isArray(d.prize)).every(d=>d.round>=2124-52));
+  const d24=load().find(d=>d.round===2124);
+  ok('等級ごとの口数と金額', JSON.stringify(d24.prize)==='[[1,200000000],[5,12345600],[264,336800],[13427,6900],[212459,1000]]', JSON.stringify(d24.prize));
+  ok('販売実績額とキャリーオーバー', d24.sales===1260775000 && d24.carry===0);
+  reqs=0;
+  await updateGame(L6,{dryRun:false,limit:150,back:0,dataDir:dir});
+  ok('次の実行で残り59回を取り、全112回がそろう', reqs===63 && has(load())===112, 'reqs='+reqs+' / '+has(load()));
+  reqs=0;
+  const p3=await updateGame(L6,{dryRun:false,limit:150,back:0,dataDir:dir});
+  ok('そろったら目次と訂正の確認3回だけで、書き込みもしない', reqs===4 && p3.prize===0 && p3.added===0 && p3.updated===0, 'reqs='+reqs);
+
+  globalThis.fetch=noPrize;
+  await updateGame(L6,{dryRun:false,limit:150,back:0,dataDir:dir});
+  ok('取り直しで賞金の行を読めなくても、読めていた値は消さない', has(load())===112);
+
+  // 読めなかった回は null を付けて、毎回取りに行かないようにする（相手サーバーに負担をかけない）
+  writeFileSync(f,JSON.stringify({draws:plain}));
+  await updateGame(L6,{dryRun:false,limit:150,back:0,dataDir:dir});
+  ok('読めなかった回は null（確認済み）として残す', load().every(d=>d.prize===null), load().filter(d=>d.prize!==null).length+'件が null 以外');
+  globalThis.fetch=withPrize; reqs=0;
+  await updateGame(L6,{dryRun:false,limit:150,back:0,dataDir:dir});
+  ok('null の回は通常の実行では取り直さない（目次と訂正の確認だけ）', reqs===4, 'reqs='+reqs);
+  reqs=0;
+  await updateGame(L6,{dryRun:false,limit:150,back:0,dataDir:dir,refetchPrizes:true});
+  ok('--refetch-prizes なら取り直して埋める', reqs===113 && has(load())===112, 'reqs='+reqs+' / '+has(load()));
+  globalThis.fetch=orig;
+}
+
 console.log('\n=== '+pass+' passed / '+fail+' failed ===');
 process.exit(fail?1:0);
