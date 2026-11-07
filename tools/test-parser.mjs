@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** 取り込みパーサの回帰テスト:  node tools/test-parser.mjs */
-import { parseCsv, normDate, GAMES, mergeDraws, parseIndex, parseRound } from './update-loto.mjs';
+import { parseCsv, normDate, GAMES, mergeDraws, parseIndex, parseRound, parsePrize } from './update-loto.mjs';
 
 let pass = 0, fail = 0;
 const eq = (name, got, want) => {
@@ -256,6 +256,27 @@ console.log('\n[11] みずほ 回別CSV（実データそのまま）');
 {
   const bad = ['A52', '第2124回ロト６,...,令和8年7月30日,...', '１等,該当なし'].join('\n');
   eq('本数字行が無ければ null', parseRound(bad, L6), null);
+}
+
+console.log('\n[9] 賞金データ（等級ごとの口数・金額、販売実績額、キャリーオーバー）');
+{
+  const csv6 = ['A52', '第2152回ロト６,数字選択式全国自治宝くじ,令和8年11月5日,東京 宝くじドリーム館',
+    '支払期間,令和8年11月6日から令和9年11月5日まで',
+    '本数字,06,20,29,36,37,41,ボーナス数字,19',
+    '１等,該当なし,該当なし', '２等,5口,"12,345,600円"', '３等,264口,336800円',
+    '４等,"13,427口",6900円', '５等,212459口,1000円',
+    'キャリーオーバー,"345,678,900円"', '販売実績額,1265780000円'].join('\r\n');
+  const p = parsePrize(csv6, L6);
+  eq('全角の等級・該当なし・引用符の中のカンマ', p && p.prize, [[0, 0], [5, 12345600], [264, 336800], [13427, 6900], [212459, 1000]]);
+  eq('キャリーオーバー', p && p.carry, 345678900);
+  eq('販売実績額', p && p.sales, 1265780000);
+  const csv7 = ['A53', '第0702回ロト７,x,令和8年11月6日,y', '本数字,01,02,03,04,05,06,07,ボーナス数字,08,09',
+    '1等,1口,600000000円', '2等,8口,7300000円', '3等,150口,700000円', '4等,6000口,9100円',
+    '5等,90000口,1400円', '6等,160000口,1000円', 'キャリーオーバー,0円', '販売実績額,3000000000円'].join('\n');
+  eq('ロト7は6等まで（半角の等級）', parsePrize(csv7, L7) && parsePrize(csv7, L7).prize.length, 6);
+  eq('等級が欠けていたら null（中途半端な値は保存しない）', parsePrize(csv6.replace('３等,264口,336800円', ''), L6), null);
+  eq('ロト6の CSV をロト7として読むと6等が無いので null', parsePrize(csv6, L7), null);
+  eq('賞金の行が無ければ null', parsePrize('本数字,06,20,29,36,37,41,ボーナス数字,19', L6), null);
 }
 
 console.log(`\n=== ${pass} passed / ${fail} failed ===`);

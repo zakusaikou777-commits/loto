@@ -155,8 +155,9 @@ html,body{margin:0;background:#0c0b10;-webkit-text-size-adjust:100%}
 .tlose{background:rgba(255,255,255,.05);color:var(--mut);border:1px solid var(--line2)}
 .tmid{background:rgba(230,181,62,.12);color:var(--gold2);border:1px solid rgba(230,181,62,.3)}
 /* ===== 比較チャート（実測 vs 理論値） ===== */
-.subnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:2px}
-.subnav .chip{padding:9px 11px}
+.subnav{display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;margin-bottom:2px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.subnav::-webkit-scrollbar{display:none}
+.subnav .chip{padding:9px 11px;flex:0 0 auto}
 .cmp{display:flex;flex-direction:column;gap:10px}
 .cmprow{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center}
 .cmplbl{color:var(--mut);font-family:var(--f-disp);font-size:11.5px;text-align:right;min-width:30px}
@@ -230,6 +231,13 @@ html,body{margin:0;background:#0c0b10;-webkit-text-size-adjust:100%}
 .cmpleg i.dot{border-radius:50%}
 .cmpleg i.ring{border-radius:50%;background:none;border:2px solid #9a948a}
 .nb.bo{background:none;border:1.5px solid #9a948a}
+/* ===== お知らせ・マイ番号 ===== */
+.notice{display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-radius:12px;padding:11px 13px;margin-bottom:14px;font-size:12.5px;line-height:1.6;
+  background:rgba(255,255,255,.05);border:1px solid var(--line2);color:var(--txt)}
+.notice.win{background:rgba(110,190,120,.12);border-color:rgba(110,190,120,.35);color:#c6ecca}
+.notice>span{flex:1;min-width:190px}
+.tmeta{flex-basis:100%;font-size:11px;color:var(--mut);line-height:1.6}
+.share{font-size:11px;color:var(--mut);margin-left:auto;white-space:nowrap}
 </style>
 </head>
 <body>
@@ -239,14 +247,17 @@ html,body{margin:0;background:#0c0b10;-webkit-text-size-adjust:100%}
 
 /* ===== ゲーム設定 ===== */
 const GAMES = {
-  loto6: { key:'loto6', name:'ロト6', mark:'LOTO 6', pick:6, max:43, bonus:1, minSum:21, maxSum:243 },
-  loto7: { key:'loto7', name:'ロト7', mark:'LOTO 7', pick:7, max:37, bonus:2, minSum:28, maxSum:238 },
+  // price: 1口の価格 / ranks: 等級の数 / popRank・popK: 人気の推定に使う等級と、その等級の本数字の一致数 / days: 抽せん曜日
+  loto6: { key:'loto6', name:'ロト6', mark:'LOTO 6', pick:6, max:43, bonus:1, minSum:21, maxSum:243, price:200, ranks:5, popRank:5, popK:3, days:[1,4] },
+  loto7: { key:'loto7', name:'ロト7', mark:'LOTO 7', pick:7, max:37, bonus:2, minSum:28, maxSum:238, price:300, ranks:6, popRank:5, popK:4, days:[5] },
 };
 const OTHER = { loto6:'loto7', loto7:'loto6' };
 
 /* ===== ユーティリティ ===== */
 const todayISO = () => { const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
 const fmtDate = s => s ? s.replace(/-/g,'.') : '—';
+const yen = n => n==null ? '—' : Math.round(n).toLocaleString('ja-JP')+'円';
+const WDAY = ['日','月','火','水','木','金','土'];
 const hexToRgb = h => { h=h.replace('#',''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; };
 const lerp = (a,b,t) => { const A=hexToRgb(a),B=hexToRgb(b); const c=A.map((v,i)=>Math.round(v+(B[i]-v)*t)); return 'rgb('+c[0]+','+c[1]+','+c[2]+')'; };
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -350,25 +361,35 @@ function rankInfo(cfg,m,b,hasB){
   if(m===3)return hasB?(b>=1?{rank:6,label:'6等'}:null):{rank:6.5,label:'3個一致(6等はボーナス次第)'};
   return null;
 }
-/* 登録日以降の抽選のみを照合対象にする */
-function bestResult(tk,draws,cfg){
-  const set=new Set(tk.numbers); let best=null,checked=0;
-  for(const d of draws){
-    if(tk.since && d.date && d.date < tk.since) continue;
-    checked++;
+/* 照合する抽せん。対象の回（from〜to）を持つ番号はその回だけ、
+   旧形式（登録日 since だけ）の番号は登録日以降の抽選すべてを照合する */
+function ticketDraws(tk,draws){
+  if(tk.from!=null) return draws.filter(d=>d.round!=null&&d.round>=tk.from&&d.round<=tk.to);
+  return draws.filter(d=>!(tk.since && d.date && d.date < tk.since));
+}
+/* 1回ごとの照合結果（古い順）。賞金データがあれば、その回のその等級の金額も付ける */
+function ticketResults(tk,draws,cfg){
+  const set=new Set(tk.numbers);
+  return ticketDraws(tk,draws).sort(byChrono).map(d=>{
     const m=d.numbers.reduce((c,n)=>c+(set.has(n)?1:0),0);
     const hasB=Array.isArray(d.bonus)&&d.bonus.length>0;
     const b=hasB?d.bonus.reduce((c,n)=>c+(set.has(n)?1:0),0):0;
     const r=rankInfo(cfg,m,b,hasB);
-    if(r&&(!best||r.rank<best.rank)) best={...r,date:d.date,round:d.round};
-  }
-  return {best,checked};
+    const p=r&&Number.isInteger(r.rank)&&Array.isArray(d.prize)?d.prize[r.rank-1]:null;
+    return {d,m,r,amount:p?p[1]:null};
+  });
+}
+function bestResult(tk,draws,cfg){
+  const res=ticketResults(tk,draws,cfg); let best=null;
+  for(const x of res) if(x.r&&(!best||x.r.rank<best.rank)) best={...x.r,date:x.d.date,round:x.d.round,amount:x.amount};
+  const pending=tk.from!=null?Math.max(0,(tk.to-tk.from+1)-res.length):0;
+  return {best,checked:res.length,pending,res};
 }
 
 /* ===== 状態 ===== */
 let state={game:'loto6',store:{loto6:[],loto7:[]},tickets:{loto6:[],loto7:[]},tab:'analysis',
   sel:[],bsel:[],tsel:[],showBonus:false,date:todayISO(),strategy:'random',sets:[],excludePast:false,
-  importMode:'merge',showNote:true,flash:'',pasteText:'',anaView:'basic',edit:null,bt:null,btRunning:false,simSel:[],simMatch:0,simShape:100,simSort:'match',simLimit:200,histLimit:100,dmWin:50,dmBonus:true,dmTable:false,simFrom:'',simExcludeId:'',
+  importMode:'merge',showNote:true,flash:'',pasteText:'',anaView:'basic',edit:null,bt:null,btRunning:false,simSel:[],simMatch:0,simShape:100,simSort:'match',simLimit:200,histLimit:100,dmWin:50,dmBonus:true,dmTable:false,predMethod:'combo',tspan:1,notice:null,simFrom:'',simExcludeId:'',
   autoSync:true,syncing:false,syncInfo:{loto6:null,loto7:null},lastWarn:'',syncError:{loto6:'',loto7:''}};
 
 const LS={d6:'lotolab-loto6',d7:'lotolab-loto7',t6:'lotolab-tk-loto6',t7:'lotolab-tk-loto7',
@@ -376,8 +397,8 @@ const LS={d6:'lotolab-loto6',d7:'lotolab-loto7',t6:'lotolab-tk-loto6',t7:'lotola
 
 function load(){
   const get=(k,fb)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):fb;}catch(e){return fb;}};
-  state.store.loto6=migrate(get(LS.d6,[]));
-  state.store.loto7=migrate(get(LS.d7,[]));
+  state.store.loto6=migrate(get(LS.d6,[]),GAMES.loto6);
+  state.store.loto7=migrate(get(LS.d7,[]),GAMES.loto7);
   state.tickets.loto6=get(LS.t6,[]);
   state.tickets.loto7=get(LS.t7,[]);
   const meta=get(LS.meta,{});
@@ -385,13 +406,21 @@ function load(){
   if(meta.syncInfo) state.syncInfo=Object.assign({loto6:null,loto7:null},meta.syncInfo);
   if(typeof meta.showNote==='boolean') state.showNote=meta.showNote;
 }
-function migrate(arr){
+function migrate(arr,cfg){
   if(!Array.isArray(arr))return[];
   return arr.filter(d=>d&&Array.isArray(d.numbers)).map(d=>({
     id:d.id||uid(), round:(typeof d.round==='number'?d.round:null),
     date:d.date||'', numbers:d.numbers.map(Number), bonus:Array.isArray(d.bonus)?d.bonus.map(Number):[],
+    ...prizeOf(d,cfg),
     ...(d.edited===true?{edited:true}:{})
   }));
+}
+/* 賞金データ（等級ごとの [口数, 金額]・販売実績額・キャリーオーバー）。形が正しいときだけ返す */
+function prizeOf(d,cfg){
+  const okInt=v=>Number.isInteger(v)&&v>=0;
+  if(!cfg||!d||!Array.isArray(d.prize)||d.prize.length!==cfg.ranks) return {};
+  if(!d.prize.every(p=>Array.isArray(p)&&p.length===2&&okInt(p[0])&&okInt(p[1]))) return {};
+  return {prize:d.prize.map(p=>[p[0],p[1]]),sales:okInt(d.sales)?d.sales:null,carry:okInt(d.carry)?d.carry:null};
 }
 function save(){
   _rev++;
@@ -543,7 +572,7 @@ function parseJson(text,cfg){
       .filter(x=>Number.isInteger(x)&&x>=1&&x<=cfg.max&&!nums.includes(x));
     const date=normDate(d.date||''); if(!date)noDate++;
     draws.push({round:Number.isInteger(d.round)?d.round:null,date,
-      numbers:[...nums].sort((a,b)=>a-b),bonus:[...new Set(bo)].sort((a,b)=>a-b)});
+      numbers:[...nums].sort((a,b)=>a-b),bonus:[...new Set(bo)].sort((a,b)=>a-b),...prizeOf(d,cfg)});
   }
   return {draws,blockLen:cfg.pick,noDate,hasDate:true,hasRound:draws.some(d=>d.round!=null)};
 }
@@ -600,30 +629,42 @@ function mergeDraws(gameKey,incoming,opts){
   const byRound=new Map();
   existing.forEach((d,i)=>{ if(d.round!=null&&!byRound.has(d.round)) byRound.set(d.round,i); });
   const sig=d=>d.date+'|'+d.numbers.join('-')+'|'+(d.bonus||[]).join('-');
-  let added=0,updated=0;
+  const money=d=>JSON.stringify([d.prize||null,d.sales??null,d.carry??null]);
+  let added=0,updated=0,filled=0; const addedRounds=[];
   const merged=[...existing];
   for(const d of incoming){
     if(opts.update && d.round!=null && byRound.has(d.round)){
       const i=byRound.get(d.round), cur=merged[i];
-      const next={...cur,date:d.date||cur.date,numbers:d.numbers,bonus:d.bonus||[]};
-      if(!cur.edited && sig(next)!==sig(cur)){ merged[i]=next; updated++; }
+      // 賞金データは減らさない（取り込む側に無ければ今の値を残す）
+      const pz=d.prize?{prize:d.prize,sales:d.sales??null,carry:d.carry??null}:{};
+      const core=cur.edited?{}:{date:d.date||cur.date,numbers:d.numbers,bonus:d.bonus||[]};
+      const next={...cur,...core,...pz};
+      if(sig(next)!==sig(cur)){ merged[i]=next; updated++; }
+      else if(money(next)!==money(cur)){ merged[i]=next; filled++; }
       continue;
     }
     const k=keyOf(d), k2=d.date+'|'+d.numbers.join('-');
     if(seen.has(k)||alt.has(k2))continue;
     seen.add(k); alt.add(k2);
     merged.push({id:uid(),...d}); added++;
+    if(d.round!=null) addedRounds.push(d.round);
   }
-  if(added||updated) state.store[gameKey]=merged;
-  return {added,updated};
+  if(added||updated||filled) state.store[gameKey]=merged;
+  return {added,updated,filled,addedRounds};
 }
 
 function importData(text){
   const cfg=GAMES[state.game];
+  // バックアップ（JSON）に入っているマイ番号を戻す。ファイルに書かれたゲームの方へ入れる
+  let tk=0, tkGame=state.game;
+  const t0=String(text||'').trim();
+  if(t0[0]==='{'){ try{ const o=JSON.parse(t0); if(o&&Array.isArray(o.tickets)){ if(GAMES[o.game]) tkGame=o.game; tk=importTickets(tkGame,o.tickets); } }catch(e){} }
+  const tkMsg=tk?' / マイ番号 '+tk+'口を復元'+(tkGame!==state.game?'（'+GAMES[tkGame].name+'）':''):'';
   const mine=parseImport(text,cfg);
   const oth=GAMES[OTHER[state.game]];
   const theirs=parseImport(text,oth);
   if(!mine||!mine.draws.length){
+    if(tk){ save(); flash('マイ番号を'+tk+'口復元しました'+(tkGame!==state.game?'（'+GAMES[tkGame].name+'。当せん番号も取り込むには上部で切り替えてください）':'')); return; }
     if(theirs&&theirs.draws.length){
       flash('このファイルは'+oth.name+'のデータのようです。上部で'+oth.name+'に切り替えてから取り込んでください');
     }else{
@@ -649,6 +690,7 @@ function importData(text){
     msg=clean.length+'件を取り込みました（置き換え）';
   }
   state.bt=null;
+  msg+=tkMsg;
   if(mine.noDate) msg+=' / 日付を読み取れなかった行 '+mine.noDate+'件';
   // 回号がそろっていれば順序は回号で決まるので、警告するのは回号のない行があるときだけ
   const needDate=mine.noDate && arr.some(d=>d.round==null);
@@ -683,8 +725,12 @@ async function syncRemote(opts){
     // ファイルはあるが中身が空 ＝ 更新ワークフローがまだ動いていない。
     // 「未配置」と混同すると原因が分からなくなるので区別する。
     if(!parsed||!parsed.draws.length) throw new Error('emptyfile');
-    const {added,updated}=mergeDraws(gameKey,parsed.draws,{update:true});
+    const before=state.store[gameKey].reduce((a,d)=>d.round!=null&&d.round>a?d.round:a,-1);
+    const {added,updated,addedRounds}=mergeDraws(gameKey,parsed.draws,{update:true});
     if(added||updated) state.bt=null;
+    // 手元の最新より新しい回が入ったら、その回を対象にしたマイ番号の結果を知らせる（初回の一括取り込みでは出さない）
+    const fresh=before>=0?addedRounds.filter(r=>r>before):[];
+    if(fresh.length){ const nt=ticketNotice(gameKey,fresh); if(nt) state.notice=nt; }
     _syncedThisSession[gameKey]=true;
     state.syncInfo[gameKey]={updated:j.updated||'',latest:j.latestRound||null,total:parsed.draws.length,at:new Date().toISOString()};
     state.syncError[gameKey]='';
@@ -726,18 +772,27 @@ function exportCsv(){
   }).join('\n');
   download(cfg.key+'_history.csv','﻿'+head+'\n'+body,'text/csv;charset=utf-8');
 }
+/* 当せん番号は自動で取り直せるが、マイ番号はこの端末にしか無いので、バックアップに必ず含める */
 function exportJson(){
   const cfg=GAMES[state.game];
   const data=state.store[state.game].map(({round,date,numbers,bonus})=>({round:round??null,date,numbers,bonus:bonus||[]}));
-  if(!data.length){flash('履歴がありません');return;}
-  download(cfg.key+'_history.json',JSON.stringify({game:cfg.key,exported:todayISO(),draws:data},null,0),'application/json');
+  const tickets=state.tickets[state.game].map(({numbers,since,from,to})=>({numbers,since:since||'',...(from!=null?{from,to}:{})}));
+  if(!data.length&&!tickets.length){flash('書き出すデータがありません');return;}
+  download(cfg.key+'_backup.json',JSON.stringify({game:cfg.key,exported:todayISO(),draws:data,tickets},null,0),'application/json');
 }
 
 /* ===== 生成 ===== */
 /* 1組を作る。generate() とバックテストの両方から呼ぶ（同じ実装を検証するため） */
-function makeTicket(strategy,cfg,a){
+function makeTicket(strategy,cfg,a,pm){
   if(strategy==='hot'){const w=[];for(let n=1;n<=cfg.max;n++)w.push({n,w:a.freq[n]+1});return weightedPick(w,cfg.pick);}
   if(strategy==='cold'){const w=[];for(let n=1;n<=cfg.max;n++)w.push({n,w:(a.maxFreq-a.freq[n])+1});return weightedPick(w,cfg.pick);}
+  if(strategy==='unpopular' && pm && pm.ok){
+    // 当せん口数の実績から推定した人気の低い数字を優先し、候補の中から組み合わせ全体の人気が最も低いものを選ぶ
+    const w=[]; for(let n=1;n<=cfg.max;n++) w.push({n,w:Math.exp(-3*pm.beta[n])});
+    let best=null,bs=Infinity;
+    for(let t=0;t<200;t++){ const c=weightedPick(w,cfg.pick), sc=pm.score(c); if(sc<bs){bs=sc;best=c;} }
+    return best;
+  }
   if(strategy==='unpopular'){
     // 誕生日(1-31)を避ける = 他人と被りにくい。
     // 連番は「人が選ばない形」なので、避けずに むしろ軽く加点する（目的と整合させる）
@@ -762,15 +817,32 @@ function makeTicket(strategy,cfg,a){
   return pickRandom(cfg.max,cfg.pick);
 }
 function generate(multi){
-  const cfg=GAMES[state.game]; const a=analyzeCached(state.store[state.game],cfg);
+  const cfg=GAMES[state.game]; const a=analyzeCached(state.store[state.game],cfg), pm=popCached(state.store[state.game],cfg);
   const past=new Set(state.store[state.game].map(d=>[...d.numbers].sort((x,y)=>x-y).join('-')));
   const out=[];
   for(let k=0;k<multi;k++){
-    let nums=makeTicket(state.strategy,cfg,a),tries=0;
-    while(state.excludePast && past.has(nums.join('-')) && tries<60){nums=makeTicket(state.strategy,cfg,a);tries++;}
+    let nums=makeTicket(state.strategy,cfg,a,pm),tries=0;
+    while(state.excludePast && past.has(nums.join('-')) && tries<60){nums=makeTicket(state.strategy,cfg,a,pm);tries++;}
     out.push({id:'g'+k+'_'+rid(),nums});
   }
   state.sets=out; render();
+}
+
+/* マイ番号を登録する。回号のデータがあれば、次回から span 回分を対象にする */
+function addTicket(gameKey,nums,span){
+  const cfg=GAMES[gameKey], nd=nextDraw(state.store[gameKey],cfg);
+  const tk={id:uid(),numbers:[...nums].sort((a,b)=>a-b),since:todayISO()};
+  if(nd&&nd.round!=null){ tk.from=nd.round; tk.to=nd.round+Math.max(1,span)-1; }
+  state.tickets[gameKey]=[...state.tickets[gameKey],tk];
+  save();
+  return tk;
+}
+function ticketTarget(tk){
+  if(tk.from==null) return '登録日（'+fmtDate(tk.since)+'）以降のすべての回（旧形式）';
+  return tk.from===tk.to?'第'+tk.from+'回':'第'+tk.from+'〜'+tk.to+'回（'+(tk.to-tk.from+1)+'回）';
+}
+function ticketFlash(tk){
+  return tk.from!=null?ticketTarget(tk)+'の番号として登録しました':'番号を登録しました（本日以降の抽せんと照合します）';
 }
 
 /* ===== 詳細分析 ===== */
@@ -976,6 +1048,194 @@ function chartData(draws,cfg,win){
   return {rows,count,bcount,last,exp:rows.length*cfg.pick/cfg.max,maxCount:Math.max(0,...count.slice(1))};
 }
 
+/* ===== 次回の抽せん =====
+   回号は最新回の次。日付は最新回の後の最初の抽せん曜日（年末年始などはずれるので「予定」として出す）。
+   キャリーオーバーは最新回の CSV に載っている「次回へ繰り越す額」 */
+function nextDraw(draws,cfg){
+  const last=[...draws].sort(byChronoDesc)[0];
+  if(!last) return null;
+  let date='';
+  if(last.date){
+    const d0=new Date(last.date+'T00:00:00');
+    for(let i=1;i<=7;i++){ const x=new Date(d0); x.setDate(d0.getDate()+i);
+      if(cfg.days.includes(x.getDay())){ date=x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0'); break; } }
+  }
+  return {round:last.round!=null?last.round+1:null,date,carry:typeof last.carry==='number'?last.carry:null,last};
+}
+
+/* ===== 次回の予想（パターン分析） =====
+   「次に出そうな数字」を過去の傾向から選ぶ方法を並べ、各方法を過去の各回に当てはめて成績を出す。
+   各回の予想にはその回より前の回だけを使う（ウォークフォワード）。数え上げは1回ずつ足していくので、
+   1,700回でも数十ミリ秒で終わる。実データではどの方法も理論値どおりで、予想に使える傾向は見つかっていない */
+const PRED=[
+  ['combo','総合','下の「出現回数が多い」「直近30回で多い」「ご無沙汰」「前回の次に多い」の順位を平均'],
+  ['hot','出現回数が多い','全期間でよく出ている数字（過去の実績でいちばん多い数字）'],
+  ['hot10','直近10回で多い','最近10回でよく出ている数字'],
+  ['hot30','直近30回で多い','最近30回でよく出ている数字'],
+  ['cold','出現回数が少ない','全期間であまり出ていない数字'],
+  ['overdue','ご無沙汰','最後に出てから長く出ていない数字'],
+  ['repeat','前回と同じ','前回出た数字がまた出る'],
+  ['markov','前回の次に多い','前回の数字が出た次の回に、よく出ていた数字'],
+];
+const PRED_Z=2.7;   // 8通りを同時に比べるので、偶然でも越えにくいしきい値（2σでは誤警報が多すぎる）
+function predEngine(draws,cfg){
+  const ch=[...draws].sort(byChrono), M=cfg.max, P=cfg.pick, T=ch.length;
+  const cnt=new Array(M+1).fill(0), c10=new Array(M+1).fill(0), c30=new Array(M+1).fill(0), last=new Array(M+1).fill(-1);
+  const trans=Array.from({length:M+1},()=>new Array(M+1).fill(0)), occ=new Array(M+1).fill(0);
+  const start=Math.max(30,Math.min(300,Math.floor(T/3)));
+  // 同点は回ごとに決まった疑似乱数で並べる（小さい数字が有利にならないように。描き直しても結果は変わらない）
+  const tie=(t,n)=>(((t+1)*2654435761)^(n*2246822519))>>>0;
+  const top=(sc,t)=>{ const a=[]; for(let n=1;n<=M;n++) a.push({n,s:sc(n)}); a.sort((x,y)=>y.s-x.s||tie(t,x.n)-tie(t,y.n)); return a; };
+  const picksAt=t=>{
+    const prev=t>0?ch[t-1].numbers:[];
+    const prevSet=new Set(prev);
+    const order={
+      hot:top(n=>cnt[n],t), hot10:top(n=>c10[n],t), hot30:top(n=>c30[n],t), cold:top(n=>-cnt[n],t),
+      overdue:top(n=>last[n]<0?t+1:t-1-last[n],t), repeat:top(n=>prevSet.has(n)?1:0,t),
+      markov:top(n=>{let s=0;for(const m of prev) if(occ[m]) s+=trans[m][n]/occ[m];return s;},t),
+    };
+    const rank={}; for(const k of ['hot','hot30','overdue','markov']) order[k].forEach((x,i)=>{ rank[x.n]=(rank[x.n]||0)+i; });
+    order.combo=top(n=>-rank[n],t);
+    const out={}; for(const k in order) out[k]=order[k].slice(0,P).map(x=>x.n).sort((a,b)=>a-b);
+    return out;
+  };
+  const hits=Object.fromEntries(PRED.map(p=>[p[0],[]]));
+  for(let t=0;t<T;t++){
+    if(t>=start){
+      const pk=picksAt(t), act=new Set(ch[t].numbers);
+      for(const k in hits) hits[k].push(pk[k].filter(n=>act.has(n)).length);
+    }
+    const d=ch[t];
+    for(const n of d.numbers){ cnt[n]++; c10[n]++; c30[n]++; last[n]=t; }
+    if(t>=10) for(const n of ch[t-10].numbers) c10[n]--;
+    if(t>=30) for(const n of ch[t-30].numbers) c30[n]--;
+    if(t>0) for(const m of ch[t-1].numbers){ occ[m]++; for(const n of d.numbers) trans[m][n]++; }
+  }
+  const next=T?picksAt(T):null, N=Math.max(0,T-start), exp=P*P/M;
+  let p3=0; for(let j=3;j<=P;j++) p3+=hyperP(cfg,j);
+  const methods=PRED.map(([key,name,desc])=>{
+    const h=hits[key], avg=N?h.reduce((a,b)=>a+b,0)/N:0;
+    const v=N>1?h.reduce((a,b)=>a+(b-avg)*(b-avg),0)/(N-1):0, se=Math.sqrt(v/Math.max(1,N));
+    return {key,name,desc,picks:next?next[key]:[],avg,se,z:se?(avg-exp)/se:0,hit3:h.filter(x=>x>=3).length};
+  });
+  return {N,start,exp,expHit3:N*p3,methods,maxZ:Math.max(0,...methods.map(m=>Math.abs(m.z)))};
+}
+let _prCache={key:'',val:null};
+function predCached(draws,cfg){
+  const key=cfg.key+'|'+_rev+'|'+draws.length;
+  if(_prCache.key!==key) _prCache={key,val:predEngine(draws,cfg)};
+  return _prCache.val;
+}
+
+/* ===== 人気の推定 =====
+   上位の当せん金は当せんした人で分け合うので、人が多く選ぶ数字ほど、当たったときの取り分が減る（当たる確率は同じ）。
+   各回の「実際の当せん口数 ÷ 売れた口数から見込まれる当せん口数」は、その回の当せん番号がどれだけ選ばれていたかを表す。
+   それを当せん番号に入っていた数字ごとの効果と、連番の効果に分ける（リッジ回帰）。
+   使う等級は、本数字の一致数だけで決まり口数の多い ロト6の5等（3個一致）/ ロト7の5等（4個一致） */
+function consecOf(nums){ const s=[...nums].sort((a,b)=>a-b); let c=0; for(let i=1;i<s.length;i++) if(s[i]===s[i-1]+1) c++; return c; }
+function solveLinear(A,b){   // ガウスの消去法（部分ピボット）。44元程度なので十分速い
+  const n=b.length, M=A.map((r,i)=>[...r,b[i]]);
+  for(let c=0;c<n;c++){
+    let p=c; for(let r=c+1;r<n;r++) if(Math.abs(M[r][c])>Math.abs(M[p][c])) p=r;
+    [M[c],M[p]]=[M[p],M[c]];
+    const v=M[c][c]||1e-12;
+    for(let r=0;r<n;r++){ if(r===c) continue; const f=M[r][c]/v; if(f) for(let k=c;k<=n;k++) M[r][k]-=f*M[c][k]; }
+  }
+  return M.map((r,i)=>r[n]/(r[i]||1e-12));
+}
+function popFit(rows,cfg,lambda){
+  const K=cfg.max+2;   // 数字ごと(0..max-1)、連番の組数(max)、切片(max+1)
+  const A=Array.from({length:K},()=>new Array(K).fill(0)), b=new Array(K).fill(0);
+  for(const r of rows){
+    const x=r.nums.map(n=>n-1).concat([cfg.max,cfg.max+1]), v=r.nums.map(()=>1).concat([r.consec,1]);
+    for(let i=0;i<x.length;i++){ b[x[i]]+=v[i]*r.y; for(let j=0;j<x.length;j++) A[x[i]][x[j]]+=v[i]*v[j]; }
+  }
+  for(let i=0;i<cfg.max;i++) A[i][i]+=lambda;
+  A[cfg.max][cfg.max]+=lambda;
+  const w=solveLinear(A,b);
+  // 数字の効果は平均を0にそろえる（全部に同じ値を足しても予測は変わらないので、平均からの差だけが意味を持つ）
+  const beta=w.slice(0,cfg.max), mb=beta.reduce((a,c)=>a+c,0)/cfg.max;
+  return {beta:[0,...beta.map(v=>v-mb)],gamma:w[cfg.max],c:w[cfg.max+1]+mb*cfg.pick};
+}
+function popModel(draws,cfg){
+  const rows=[];
+  for(const d of [...draws].sort(byChrono)){
+    if(!Array.isArray(d.prize)||!d.sales) continue;
+    const w=d.prize[cfg.popRank-1], e=d.sales/cfg.price*hyperP(cfg,cfg.popK);
+    if(!w||!(w[0]>0)||!(e>0)) continue;
+    rows.push({d,nums:d.numbers,consec:consecOf(d.numbers),y:Math.log(w[0]/e)});
+  }
+  const n=rows.length;
+  if(n<60) return {ok:false,n};
+  const lambda=5, fit=popFit(rows,cfg,lambda);
+  const pred=(f,r)=>f.c+r.nums.reduce((a,x)=>a+f.beta[x],0)+f.gamma*r.consec;
+  // 当てはまりは5分割の交差検証で測る（学習に使っていない回を予測できるか）
+  let sse=0,sst=0;
+  for(let k=0;k<5;k++){
+    const tr=rows.filter((_,i)=>i%5!==k), te=rows.filter((_,i)=>i%5===k);
+    const f=popFit(tr,cfg,lambda), my=tr.reduce((a,r)=>a+r.y,0)/tr.length;
+    for(const r of te){ sse+=(r.y-pred(f,r))**2; sst+=(r.y-my)**2; }
+  }
+  // rel: 平均的な組み合わせ（連番の組数の期待値は pick(pick-1)/max）を0とした人気。exp(-rel) が取り分の目安
+  const eC=cfg.pick*(cfg.pick-1)/cfg.max;
+  const score=nums=>nums.reduce((a,x)=>a+fit.beta[x],0)+fit.gamma*consecOf(nums);
+  return {ok:true,n,beta:fit.beta,gamma:fit.gamma,c:fit.c,r2:sst?1-sse/sst:0,score,rel:nums=>score(nums)-fit.gamma*eC};
+}
+let _popCache={key:'',val:null};
+function popCached(draws,cfg){
+  const key=cfg.key+'|'+_rev+'|'+draws.length;
+  if(_popCache.key!==key) _popCache={key,val:popModel(draws,cfg)};
+  return _popCache.val;
+}
+/* 払戻しの実績。払戻率 = その回に払った当せん金の合計 ÷ 販売実績額。
+   キャリーオーバーで繰り越された分も、1等が出た回に払われるので払戻率に入る */
+function payoutStats(draws,cfg){
+  const rows=[...draws].filter(d=>Array.isArray(d.prize)&&d.sales>0).sort(byChrono);
+  const byRound=new Map(rows.map(d=>[d.round,d]));
+  const list=rows.map(d=>{
+    const paid=d.prize.reduce((a,p)=>a+p[0]*p[1],0), prev=d.round!=null?byRound.get(d.round-1):null;
+    return {d,paid,rate:paid/d.sales,carryIn:prev&&typeof prev.carry==='number'?prev.carry:null};
+  });
+  const avg=a=>a.length?a.reduce((x,y)=>x+y.rate,0)/a.length:null;
+  const withC=list.filter(x=>x.carryIn>0), noC=list.filter(x=>x.carryIn===0);
+  return {list,avgAll:avg(list),avgCarry:avg(withC),avgNoCarry:avg(noC),nCarry:withC.length,nNoCarry:noC.length};
+}
+
+/* ===== マイ番号の取り込み（バックアップからの復元） ===== */
+function importTickets(gameKey,arr){
+  const cfg=GAMES[gameKey], cur=state.tickets[gameKey];
+  const keyT=t=>t.numbers.join('-')+'|'+(t.from??'')+'|'+(t.to??'')+'|'+(t.since||'');
+  const seen=new Set(cur.map(keyT)), out=[...cur]; let added=0;
+  for(const t of (Array.isArray(arr)?arr:[])){
+    if(!t||!Array.isArray(t.numbers)) continue;
+    const nums=t.numbers.map(Number).filter(x=>Number.isInteger(x)&&x>=1&&x<=cfg.max);
+    if(nums.length!==cfg.pick||new Set(nums).size!==cfg.pick) continue;
+    const from=Number.isInteger(t.from)?t.from:null, to=Number.isInteger(t.to)?t.to:null;
+    const tk={id:uid(),numbers:[...nums].sort((a,b)=>a-b),since:normDate(t.since||'')||''};
+    if(from!=null&&to!=null&&to>=from){ tk.from=from; tk.to=to; }
+    if(seen.has(keyT(tk))) continue;
+    seen.add(keyT(tk)); out.push(tk); added++;
+  }
+  state.tickets[gameKey]=out;
+  return added;
+}
+/* 自動取得で新しい回が入ったとき、その回を対象にしたマイ番号の結果をまとめる */
+function ticketNotice(gameKey,rounds){
+  const cfg=GAMES[gameKey], draws=state.store[gameKey], set=new Set(rounds);
+  const target=draws.filter(d=>set.has(d.round));
+  if(!target.length) return null;
+  let checked=0; const wins=[];
+  for(const tk of state.tickets[gameKey]){
+    for(const x of ticketResults(tk,target,cfg)){
+      checked++;
+      if(x.r) wins.push('第'+x.d.round+'回 '+x.r.label+(x.amount!=null?'（'+yen(x.amount)+'）':''));
+    }
+  }
+  if(!checked) return null;
+  const rs=[...set].sort((a,b)=>a-b), head=cfg.name+' 第'+rs.join('・')+'回の結果: マイ番号 '+checked+'口を照合し、';
+  return {win:wins.length>0,text:head+(wins.length?wins.length+'口が当せん — '+wins.join(' / '):'当せんはありませんでした')};
+}
+
 /* ===== HTML パーツ ===== */
 function ballHTML(n,tone,size=38){return '<span class="ball ball-'+tone+'" style="width:'+size+'px;height:'+size+'px;font-size:'+(size*0.42).toFixed(1)+'px">'+n+'</span>';}
 /* 出現頻度は「大きさ」の表現なので逐次ランプ（単一色相・明度単調）にする。
@@ -1006,13 +1266,14 @@ function emptyHTML(){
 function renderAnalysis(){
   const cfg=GAMES[state.game]; const a=analyzeCached(state.store[state.game],cfg);
   if(a.count===0 && state.anaView!=='similar') return emptyHTML();
-  const V=[['basic','基本'],['chart','出目表'],['deep','詳細'],['backtest','戦略の検証'],['similar','似た回']];
+  const V=[['basic','基本'],['chart','出目表'],['pop','人気'],['deep','詳細'],['backtest','戦略の検証'],['similar','似た回']];
   let h='<div class="subnav">'+V.map(v=>'<button class="chip'+(state.anaView===v[0]?' on':'')
       +'" data-action="anaView" data-view="'+v[0]+'">'+v[1]+'</button>').join('')+'</div>';
   if(state.anaView==='deep') return h+renderDeep();
   if(state.anaView==='backtest') return h+renderBacktest();
   if(state.anaView==='similar')  return h+renderSimilar();
   if(state.anaView==='chart')    return h+renderChart();
+  if(state.anaView==='pop')      return h+renderPop();
   h+='<div class="lead"><b>'+a.count+'</b> 回分の'+cfg.name+'抽選結果を分析中</div>';
   if(a.noDate) h+='<div class="warnbox"><b>日付のない履歴が '+a.noDate+' 件あります。</b>「ご無沙汰番号」は回号・抽せん日の順に数えるため、回号も日付もない回の位置が定まらず結果が不正確になります。</div>';
   h+=randomnessHTML(a,cfg);
@@ -1170,7 +1431,7 @@ function renderBacktest(){
 function renderDiagnosis(nums,cfg){
   const draws=state.store[state.game];
   if(draws.length<10) return '<div class="hintbox">診断には10回分以上の履歴が必要です（現在'+draws.length+'回）。データタブで取り込んでください。</div>';
-  const g=diagnose(nums,draws,cfg);
+  const g=diagnose(nums,draws,cfg), pmD=popCached(draws,cfg);
   let h='';
 
   // --- 数字ごと ---
@@ -1246,6 +1507,7 @@ function renderDiagnosis(nums,cfg){
     +cmpCell('奇数の個数',g.odd,g.avgOdd.toFixed(1))
     +cmpCell('低い数(1〜'+Math.floor(cfg.max/2)+')',g.low,g.avgLow.toFixed(1))
     +'<div class="rcell"><span>連番</span><b>'+(g.consec?g.consec+' 組':'なし')+'</b></div>'
+    +(pmD.ok?'<div class="rcell"><span>当たったときの取り分の目安（人気から推定）</span><b>平均の '+Math.exp(-pmD.rel(nums)).toFixed(2)+' 倍</b></div>':'')
     +'</div>'
     +'<p class="rnote">平均から離れていても不利ではありません。合計値や奇偶は結果を見て集計しているだけで、'
     +'どの組み合わせも当せん確率は '+(1/comb(cfg.max,cfg.pick)).toExponential(2)+'（'
@@ -1394,6 +1656,52 @@ function dmPointer(e){
   tip.style.top=Math.max(0,top)+'px';
 }
 
+function renderPop(){
+  const cfg=GAMES[state.game], draws=state.store[state.game];
+  const withPrize=draws.filter(d=>Array.isArray(d.prize)).length, pm=popCached(draws,cfg), ps=payoutStats(draws,cfg);
+  let h='';
+  if(!pm.ok){
+    h+='<div class="hintbox"><b>人気の推定には、賞金データ（各回の当せん口数と販売実績額）が60回分以上必要です</b>（現在'+withPrize+'回分）。<br>'
+      +'GitHub Actions の自動更新が、1回の実行ごとに最大150回分ずつ集めています（全部そろうまで数週間）。'
+      +'すぐに集めるには、Actions タブの「当せん番号の自動更新」を、limit に 3000 を入れて手動実行してください。</div>';
+  }else{
+    const MID='#2a2833', POS='#d9a938', NEG='#329acd';
+    const maxAbs=Math.max(1e-9,...pm.beta.slice(1).map(Math.abs));
+    const pctOf=b=>(Math.exp(b)-1)*100, fmtP=v=>(v>=0?'+':'')+v.toFixed(0)+'%';
+    let cells='';
+    for(let n=1;n<=cfg.max;n++){
+      const b=pm.beta[n], t=Math.max(-1,Math.min(1,b/maxAbs));
+      const bg=t>=0?lerp(MID,POS,t):lerp(MID,NEG,-t), ink=Math.abs(t)>0.55?'#10100c':'#ece6d8';
+      cells+='<div class="heat" style="background:'+bg+';color:'+ink+'" title="'+n+': '+fmtP(pctOf(b))+'"><span class="heat-n">'+n+'</span><span class="heat-f">'+fmtP(pctOf(b))+'</span></div>';
+    }
+    const order=[...Array(cfg.max)].map((_,i)=>i+1).sort((x,y)=>pm.beta[y]-pm.beta[x]);
+    const lst=a=>a.map(n=>n+'（'+fmtP(pctOf(pm.beta[n]))+'）').join('・');
+    h+=card('数字ごとの人気','その数字が当せん番号に入っていた回は、'+cfg.popRank+'等（本数字'+cfg.popK+'個一致）の当せん者が平均より何%多かったか',
+      '<div class="heatgrid">'+cells+'</div>'
+      +'<div class="legend"><span>選ばれにくい</span><i class="legbar" style="background:linear-gradient(90deg,'+NEG+','+MID+','+POS+')"></i><span>よく選ばれる</span></div>'
+      +'<p class="rnote">よく選ばれる: '+lst(order.slice(0,5))+'<br>選ばれにくい: '+lst(order.slice(-5).reverse())+'</p>');
+    const r2=Math.max(0,pm.r2);
+    const rel=r2>=0.3?'人気の違いがはっきり出ています':r2>=0.1?'人気の違いがある程度出ています':'人気の違いははっきりしません（推定の信頼性は低めです）';
+    h+=card('推定の当てはまり',pm.n+'回分の当せん口数と販売実績額から推定',
+      '<div class="rstats"><div class="rcell"><span>当せん者数のばらつきのうち説明できた割合</span><b>'+(r2*100).toFixed(0)+' %</b></div>'
+      +'<div class="rcell"><span>連番が1組あると当せん者は</span><b>'+fmtP(pctOf(pm.gamma))+'</b></div></div>'
+      +'<div class="verdict'+(r2>=0.1?'':' warn')+'"><b>'+rel+'</b>　割合は、推定に使っていない回の当せん者数をどれだけ言い当てられたかで測っています（5分割の交差検証）。</div>'
+      +'<p class="rnote">当たる確率はどの数字も同じです。わかるのは「当たったとき、何人と分け合うことになりやすいか」だけです。'
+      +'下位の等級の当せん口数から推定した目安で、1等の人数を正確に予測するものではありません。</p>');
+  }
+  if(ps.list.length){
+    const recent=ps.list.slice(-10).reverse();
+    const tr=recent.map(x=>'<tr><td class="whn"><b>第'+x.d.round+'回</b><span>'+fmtDate(x.d.date)+'</span></td>'
+      +'<td class="n">'+(x.d.prize[0][0]?x.d.prize[0][0]+'口':'該当なし')+'</td>'
+      +'<td class="n">'+(x.d.carry!=null?yen(x.d.carry):'—')+'</td>'
+      +'<td class="n">'+(x.rate*100).toFixed(1)+'%</td></tr>').join('');
+    h+=card('払戻しとキャリーオーバー','払戻率 = その回に払われた当せん金の合計 ÷ 販売実績額（直近10回）',
+      '<div class="btwrap"><table class="ptable simt"><thead><tr><th>回</th><th style="text-align:right">1等</th><th style="text-align:right">キャリーオーバー</th><th style="text-align:right">払戻率</th></tr></thead><tbody>'+tr+'</tbody></table></div>'
+      +(ps.avgCarry!=null&&ps.avgNoCarry!=null?'<p class="rnote">払戻率の平均: キャリーオーバーがあった回 '+(ps.avgCarry*100).toFixed(1)+'%（'+ps.nCarry+'回）・なかった回 '+(ps.avgNoCarry*100).toFixed(1)+'%（'+ps.nNoCarry+'回）。全'+ps.list.length+'回の平均は '+(ps.avgAll*100).toFixed(1)+'%。</p>':''));
+  }
+  return h;
+}
+
 function renderSimilar(){
   const cfg=GAMES[state.game]; const draws=state.store[state.game];
   const sel=[...state.simSel].sort((a,b)=>a-b);
@@ -1472,17 +1780,68 @@ function renderSimilar(){
   return h;
 }
 
+const signed=z=>(z>=0?'+':'')+z.toFixed(1);
+function nextDrawCard(cfg,draws){
+  const nd=nextDraw(draws,cfg); if(!nd) return '';
+  const when=(nd.round!=null?'第'+nd.round+'回':'次回')
+    +(nd.date?'（予定 '+fmtDate(nd.date)+' '+WDAY[new Date(nd.date+'T00:00:00').getDay()]+'）':'');
+  let carry;
+  if(nd.carry==null) carry='<span class="muted">キャリーオーバー: 賞金データの取得待ちです</span>';
+  else if(nd.carry>0) carry='<b style="color:var(--gold2)">キャリーオーバー '+yen(nd.carry)+'</b><br><span class="muted">前回1等が出なかった分が、次回の1等に上乗せされます（当たる確率は変わりません）。</span>';
+  else carry='キャリーオーバーはありません。';
+  const ps=payoutStats(draws,cfg);
+  const ev=(ps.avgCarry!=null&&ps.avgNoCarry!=null)
+    ?'<p class="rnote">1口（'+cfg.price+'円）あたりの払戻しの実績: キャリーオーバーがあった回は平均 '+yen(ps.avgCarry*cfg.price)+'（'+ps.nCarry+'回）、'
+     +'なかった回は平均 '+yen(ps.avgNoCarry*cfg.price)+'（'+ps.nNoCarry+'回）。どちらも1口の価格を下回ります。</p>':'';
+  return card('次回の抽せん',when,'<p style="margin:0;font-size:13px;line-height:1.7">'+carry+'</p>'+ev);
+}
+function renderPredict(cfg,draws){
+  if(draws.length<60) return card('次回の予想（パターン分析）','','<p class="muted">予想と、その成績の計算には60回分以上の履歴が必要です（現在'+draws.length+'回）。</p>');
+  const pr=predCached(draws,cfg), nd=nextDraw(draws,cfg);
+  const cur=pr.methods.find(m=>m.key===state.predMethod)||pr.methods[0];
+  const chips='<div class="chiprow">'+pr.methods.map(m=>'<button class="chip'+(m.key===cur.key?' on':'')
+    +'" data-action="predMethod" data-v="'+m.key+'">'+m.name+'</button>').join('')+'</div>';
+  const balls='<div class="rowballs" style="margin:2px 0 14px">'+cur.picks.map(n=>ballHTML(n,'gold',40)).join('')+'</div>';
+  const i_=t=>' <i style="font-size:11px;color:var(--mut);font-style:normal">'+t+'</i>';
+  const stats='<div class="rstats">'
+    +'<div class="rcell"><span>1口あたりの平均一致（過去'+pr.N+'回）</span><b>'+cur.avg.toFixed(3)+' 個'+i_('/ 理論 '+pr.exp.toFixed(3))+'</b></div>'
+    +'<div class="rcell"><span>3個以上一致した回</span><b>'+cur.hit3+' 回'+i_('/ 理論 '+pr.expHit3.toFixed(1))+'</b></div></div>';
+  const v=Math.abs(cur.z)<PRED_Z
+    ?'<div class="verdict"><b>成績は理論値どおり</b>　ずれは '+signed(cur.z)+'σ で、適当に選んだ場合と区別できません。</div>'
+    :'<div class="verdict warn"><b>理論値から '+signed(cur.z)+'σ ずれています</b>　8通りの方法を同時に比べているので、偶然でもときどき起こる大きさです。</div>';
+  const reg='<div class="addrow" style="margin-top:12px"><button class="ghostbtn" data-action="predRegister">この番号をマイ番号に登録'
+    +(nd&&nd.round!=null?'（第'+nd.round+'回）':'')+'</button></div>';
+  let h=card('次回の予想（パターン分析）',(nd&&nd.round!=null?'第'+nd.round+'回の予想 ・ ':'')+esc(cur.desc),
+    chips+balls+stats+v+reg
+    +'<p class="rnote">成績は、この方法を過去'+pr.N+'回の各回に当てはめ、その回より前のデータだけで選んだ番号を、実際の当せん番号と照合したものです。</p>');
+  const scale=Math.max(...pr.methods.map(m=>m.avg+2*m.se),pr.exp)*1.2;
+  const rows=pr.methods.map(m=>cmpRowSE(m.name,m.avg,m.se,pr.exp,scale)).join('');
+  const concl=pr.maxZ<PRED_Z
+    ?'<div class="verdict"><b>どの方法も理論値どおり</b>　過去の出方をどう使っても、1口あたりの一致数は適当に選んだ場合（'+pr.exp.toFixed(3)
+     +'個）と変わりませんでした。抽せんは毎回独立していて、予想に使える傾向はありません。</div>'
+    :'<div class="verdict warn"><b>理論値から外れた方法があります（最大'+pr.maxZ.toFixed(1)+'σ）</b>　8通りを同時に比べると、偶然でも起こりうる大きさです。'
+     +'抽せんが増えるたびに計算し直されるので、外れ続けるかどうかで判断してください。</div>';
+  h+=card('予想方法ごとの成績','過去'+pr.N+'回での1口あたりの平均一致数（数値は 実測 / 理論値）',
+    '<div class="cmp">'+rows+'</div>'
+    +'<div class="cmpleg"><span><i style="background:var(--mark1)"></i>各方法の実測</span><span><i class="ibeam"></i>±2標準誤差</span>'
+    +'<span><i class="k2" style="background:var(--mark2)"></i>理論値 '+pr.exp.toFixed(3)+'個</span></div>'+concl);
+  return h;
+}
 function renderGenerate(){
-  const cfg=GAMES[state.game]; const a=analyzeCached(state.store[state.game],cfg);
-  const S=[['random','完全ランダム','均等な確率で抽選'],['hot','ホット重視','よく出ている番号を優先'],['cold','コールド重視','あまり出ていない番号を優先'],['balanced','バランス型','合計値・奇偶を過去平均に寄せる'],['unpopular','不人気ねらい','32以上と連番中心で被りにくく']];
+  const cfg=GAMES[state.game]; const draws=state.store[state.game]; const a=analyzeCached(draws,cfg), pm=popCached(draws,cfg);
+  const S=[['random','完全ランダム','均等な確率で抽選'],['hot','ホット重視','よく出ている番号を優先'],['cold','コールド重視','あまり出ていない番号を優先'],['balanced','バランス型','合計値・奇偶を過去平均に寄せる'],
+    ['unpopular','不人気ねらい',pm.ok?'当せん口数の実績から、選ばれにくい数字を優先':'32以上と連番中心で被りにくく']];
   const strat=S.map(s=>'<button class="stratbtn'+(state.strategy===s[0]?' on':'')+'" data-action="strategy" data-strat="'+s[0]+'"><b>'+s[1]+'</b><span>'+s[2]+'</span></button>').join('');
   const toggle='<button class="chip'+(state.excludePast?' on':'')+'" data-action="toggleExclude">過去の当選組合せを除外 '+(state.excludePast?'ON':'OFF')+'</button>';
   const body='<div class="strat">'+strat+'</div><div class="chiprow">'+toggle+'</div><div class="genbtns"><button class="primary" data-action="gen" data-multi="1">1組 生成</button><button class="ghostbtn" data-action="gen" data-multi="5">5組 生成</button></div>';
-  let h=card('生成方法',(a.count===0?'※履歴がないため、傾向系は実質ランダムになります':'過去の傾向をどう使うか'),body);
-  h+='<div class="gennote"><b>確率について</b>どの生成方法でも<u>当選確率は同じ</u>です（抽選は毎回完全ランダム）。「不人気ねらい」は確率ではなく、<u>当たったとき賞金を分け合う人数を減らす</u>＝1人あたりの分配額を上げることを狙う方法です。誕生日で選ばれやすい1〜31を避け、人が敬遠しがちな連番はあえて許容します。</div>';
+  let h=nextDrawCard(cfg,draws)+renderPredict(cfg,draws);
+  h+=card('番号の生成',(a.count===0?'※履歴がないため、傾向系は実質ランダムになります':'過去の傾向をどう使うか'),body);
+  h+='<div class="gennote"><b>確率について</b>どの生成方法でも<u>当選確率は同じ</u>です（抽選は毎回完全ランダム）。「不人気ねらい」は確率ではなく、<u>当たったとき賞金を分け合う人数を減らす</u>＝1人あたりの分配額を上げることを狙う方法です。'
+    +(pm.ok?'各回の当せん口数の実績から推定した、人に選ばれにくい数字を優先します（分析タブの「人気」）。':'誕生日で選ばれやすい1〜31を避け、人が敬遠しがちな連番はあえて許容します。')+'</div>';
   if(state.sets.length){
-    const rows=state.sets.map((s,i)=>'<div class="resrow"><span class="resno">'+String(i+1).padStart(2,'0')+'</span><div class="resballs">'+s.nums.map(n=>ballHTML(n,'gold',34)).join('')+'</div></div>').join('');
-    h+=card('生成結果','どの組み合わせも当選確率は同じです','<div class="results">'+rows+'</div>');
+    const rows=state.sets.map((s,i)=>'<div class="resrow"><span class="resno">'+String(i+1).padStart(2,'0')+'</span><div class="resballs">'+s.nums.map(n=>ballHTML(n,'gold',34)).join('')+'</div>'
+      +(pm.ok?'<span class="share">取り分の目安 平均の'+Math.exp(-pm.rel(s.nums)).toFixed(2)+'倍</span>':'')+'</div>').join('');
+    h+=card('生成結果','どの組み合わせも当選確率は同じです'+(pm.ok?'。取り分の目安は「人気」の推定から（1より大きいほど、当たったとき分け合う人が少ない）':''),'<div class="results">'+rows+'</div>');
   }
   return h;
 }
@@ -1495,7 +1854,12 @@ function rankLegend(cfg){
 function renderTickets(){
   const cfg=GAMES[state.game];
   let pk=''; for(let n=1;n<=cfg.max;n++){const on=state.tsel.includes(n);const dis=!on&&state.tsel.length>=cfg.pick;pk+='<button class="pk'+(on?' on':'')+'" data-action="ttoggle" data-n="'+n+'"'+(dis?' disabled':'')+'>'+n+'</button>';}
-  const builder='<div class="picker">'+pk+'</div><div class="addrow"><button class="minighost" data-action="trandom">おまかせ</button><button class="minighost" data-action="tclear">クリア</button><button class="primary" data-action="tadd"'+(state.tsel.length!==cfg.pick?' disabled':'')+'>登録</button></div>';
+  const nd=nextDraw(state.store[state.game],cfg);
+  const spanChip=(v,l)=>'<button class="chip'+(state.tspan===v?' on':'')+'" data-action="tspan" data-v="'+v+'">'+l+'</button>';
+  const span='<p class="muted small" style="margin-top:2px">対象の回'+(nd&&nd.round!=null?'（第'+nd.round+'回から）':'')+'</p>'
+    +(nd&&nd.round!=null?'<div class="chiprow">'+spanChip(1,'次回だけ')+spanChip(5,'5回分')+spanChip(10,'10回分')+'</div>'
+      :'<p class="hint" style="margin:0 0 12px">回号のデータがないため、登録日以降の抽せんと照合します。</p>');
+  const builder='<div class="picker">'+pk+'</div>'+span+'<div class="addrow"><button class="minighost" data-action="trandom">おまかせ</button><button class="minighost" data-action="tclear">クリア</button><button class="primary" data-action="tadd"'+(state.tsel.length!==cfg.pick?' disabled':'')+'>登録</button></div>';
   let h=card('買う番号を選ぶ','数字を '+cfg.pick+' 個タップ ('+state.tsel.length+'/'+cfg.pick+')　'+cfg.pick+'個そろうと下に診断が出ます',builder);
 
   // 選択が完成したら、その組み合わせの診断を表示する
@@ -1507,22 +1871,23 @@ function renderTickets(){
   }
   const tickets=state.tickets[state.game]; const draws=state.store[state.game];
   if(tickets.length===0){
-    h+=card('登録した番号 (0口)','','<p class="muted">まだありません。上で登録すると、以降に取り込まれた抽せん結果と自動で照合します。</p>');
+    h+=card('登録した番号 (0口)','','<p class="muted">まだありません。上で登録すると、対象の回の抽せん結果と自動で照合し、結果が出たら画面上部でお知らせします。</p>');
   }else{
     const list=tickets.map(tk=>{
+      const {best,checked,pending,res}=bestResult(tk,draws,cfg);
       let badge;
-      if(draws.length===0) badge='<span class="tres tmid">履歴なし</span>';
-      else{
-        const {best,checked}=bestResult(tk,draws,cfg);
-        if(checked===0) badge='<span class="tres tmid">照合対象の抽せんなし</span>';
-        else badge=best?'<span class="tres twin">'+best.label+' ・ '+fmtDate(best.date)+'</span>'
-                       :'<span class="tres tlose">当選なし（'+checked+'回照合）</span>';
-      }
+      if(checked===0) badge='<span class="tres tmid">'+(tk.from!=null?'抽せん待ち':'照合対象の抽せんなし')+'</span>';
+      else badge=best?'<span class="tres twin">'+best.label+(best.amount!=null?' '+yen(best.amount):'')+' ・ '+(best.round!=null?'第'+best.round+'回':fmtDate(best.date))+'</span>'
+                     :'<span class="tres tlose">当選なし（'+checked+'回照合）</span>';
+      // 回ごとの結果（直近10回まで）
+      const per=res.slice(-10).map(x=>(x.d.round!=null?'第'+x.d.round+'回':fmtDate(x.d.date))+' '+(x.r?x.r.label+(x.amount!=null?'('+yen(x.amount)+')':''):x.m+'個一致')).join('・');
+      const meta='対象: '+ticketTarget(tk)+(pending>0&&checked>0?' ・ 残り'+pending+'回':'')+(per?'<br>'+per:'');
       return '<div class="trow"><div class="tnums">'+tk.numbers.map(n=>ballHTML(n,'mini',26)).join('')+'</div>'+badge
         +'<button class="edit" data-action="tdiag" data-id="'+tk.id+'" title="この番号を診断">🔍</button>'
-        +'<button class="del" data-action="tdel" data-id="'+tk.id+'">×</button></div>';
+        +'<button class="del" data-action="tdel" data-id="'+tk.id+'">×</button>'
+        +'<div class="tmeta">'+meta+'</div></div>';
     }).join('');
-    h+=card('登録した番号 ('+tickets.length+'口)','各番号の登録日以降の抽せんのみを照合し、最高ランクを表示','<div class="toolrow"><button class="minidanger" data-action="tclearAll">全消去</button></div><div class="tlist">'+list+'</div>');
+    h+=card('登録した番号 ('+tickets.length+'口)','各番号の対象の回の抽せんと照合し、最高ランクを表示（金額は賞金データがある回だけ）','<div class="toolrow"><button class="minidanger" data-action="tclearAll">全消去</button></div><div class="tlist">'+list+'</div>');
   }
   h+='<div class="hintbox"><b>当選ランクの基準</b><br>'+rankLegend(cfg)+'<br><span style="color:var(--mut)">※ボーナス数字が未登録の回は「2等/3等」のように候補表示になります。実際の当せん確認は必ずみずほ銀行公式で行ってください。</span></div>';
   return h;
@@ -1609,14 +1974,15 @@ function renderData(){
   const warn=state.lastWarn?'<div class="warnbox">'+esc(state.lastWarn)+'</div>':'';
   const imp=modeSel+
     '<p class="muted small">① CSVファイルを取り込む（推奨）</p>'+
-    '<label class="filebtn">CSVファイルを選ぶ<input type="file" id="fileIn" accept=".csv,.txt,.tsv" hidden></label>'+
+    '<label class="filebtn">CSVファイルを選ぶ<input type="file" id="fileIn" accept=".csv,.txt,.tsv,.json" hidden></label>'+
     '<p class="hint">回号・抽せん日・本数字・ボーナスが並んだCSVを列位置で自動判別します。Shift-JIS、和暦（令和8年5月30日 / R8.5.30）にも対応。'+cfg.name+'以外のファイルを選んだ場合は取り込み前に警告します。</p>'+
     '<p class="muted small" style="margin-top:14px">② テキストを貼り付けて取り込む</p>'+
     '<textarea class="ta" id="importText" rows="3" placeholder="CSV または {&quot;draws&quot;:[{&quot;round&quot;:2124,&quot;date&quot;:&quot;2026-05-30&quot;,&quot;numbers&quot;:[3,11,19,25,31,40],&quot;bonus&quot;:[5]}]}">'+esc(state.pasteText)+'</textarea>'+
     '<button class="ghostbtn" data-action="importPaste" style="margin-top:10px">貼り付けたデータを取り込む</button>'+
     warn+
     '<p class="muted small" style="margin-top:16px">③ 書き出し（バックアップ）</p>'+
-    '<div class="genbtns"><button class="minighost" data-action="exportCsv">CSVで保存</button><button class="minighost" data-action="exportJson">JSONで保存</button></div>';
+    '<div class="genbtns"><button class="minighost" data-action="exportCsv">CSVで保存</button><button class="minighost" data-action="exportJson">JSONで保存（マイ番号も含む）</button></div>'+
+    '<p class="hint">機種変更のときは「JSONで保存」したファイルを、新しい端末の①から取り込むとマイ番号も戻ります（ロト6・ロト7それぞれ保存してください）。当せん番号は自動で取り直せます。</p>';
   h+=card('データの取り込み・書き出し','過去の当せん結果をまとめて読み込めます',imp);
 
   h+='<div class="hintbox"><b>アプリのように使うには</b><br>このページをスマホで開き、ブラウザの共有メニューから「ホーム画面に追加」を選ぶと、アイコン付き・全画面で起動できます。データは端末内に保存されます。</div>';
@@ -1629,7 +1995,7 @@ function paneHTML(){return state.tab==='analysis'?renderAnalysis():state.tab==='
 function render(){
   const sw=Object.values(GAMES).map(g=>'<button class="sw'+(state.game===g.key?' on':'')+'" data-action="game" data-game="'+g.key+'"><span class="sw-mark">'+g.mark+'</span><span class="sw-sub">'+g.pick+'個 / 1–'+g.max+'</span></button>').join('');
   const tn=state.store[state.game].length;
-  const tabs=[['analysis','分析'],['generate','生成'],['tickets','マイ番号'],['data','データ'+(tn?'·'+tn:'')]].map(t=>'<button class="tab'+(state.tab===t[0]?' on':'')+'" data-action="tab" data-tab="'+t[0]+'">'+t[1]+'</button>').join('');
+  const tabs=[['analysis','分析'],['generate','予想'],['tickets','マイ番号'],['data','データ'+(tn?'·'+tn:'')]].map(t=>'<button class="tab'+(state.tab===t[0]?' on':'')+'" data-action="tab" data-tab="'+t[0]+'">'+t[1]+'</button>').join('');
   const note=state.showNote?'<div class="note"><span class="note-dot"></span><span>抽選は毎回<b>独立した完全ランダム</b>です。過去の傾向から次回の当選番号を当てることはできません。生成した番号の当選確率は、他のどの組み合わせともまったく同じです。</span><button class="note-x" data-action="closeNote">×</button></div>':'';
   const root=document.getElementById('root');
   const sc=root.querySelector('.hist'); const scTop=sc?sc.scrollTop:0;
@@ -1637,6 +2003,8 @@ function render(){
     '<header class="hd"><div class="hd-mark">幸</div><div class="hd-txt"><h1>宝くじ分析ラボ</h1><p>ロト6・ロト7 ― 出現傾向の可視化 &amp; 番号ジェネレーター</p></div></header>'+
     '<div class="switch">'+sw+'</div>'+ note +
     '<nav class="tabs">'+tabs+'</nav>'+
+    (state.notice?'<div class="notice'+(state.notice.win?' win':'')+'"><span>'+(state.notice.win?'🎉 ':'')+esc(state.notice.text)+'</span>'
+      +'<button class="minighost" data-action="tab" data-tab="tickets">マイ番号を見る</button><button class="note-x" data-action="closeNotice" aria-label="閉じる">×</button></div>':'')+
     (state.flash?'<div class="flash">'+esc(state.flash)+'</div>':'')+
     '<section class="pane">'+paneHTML()+'</section>'+
     '<footer class="ft">宝くじは余裕資金の範囲で。生成番号は娯楽目的であり、当選を保証するものではありません。<br>当せん確認は必ずみずほ銀行公式でお願いします。</footer>';
@@ -1786,7 +2154,15 @@ document.addEventListener('click',e=>{
     case 'tclear': state.tsel=[]; break;
     case 'tdiag': { const tk=state.tickets[state.game].find(x=>x.id===t.dataset.id); if(tk) state.tsel=[...tk.numbers]; break; }
     case 'trandom': state.tsel=pickRandom(cfg.max,cfg.pick); break;
-    case 'tadd': { if(state.tsel.length!==cfg.pick)return; const nums=[...state.tsel].sort((x,y)=>x-y); state.tickets[state.game]=[...state.tickets[state.game],{id:uid(),numbers:nums,since:todayISO()}]; state.tsel=[]; save(); flash('番号を登録しました（本日以降の抽せんと照合します）'); return; }
+    case 'tadd': { if(state.tsel.length!==cfg.pick)return; const tk=addTicket(state.game,state.tsel,state.tspan); state.tsel=[]; flash(ticketFlash(tk)); return; }
+    case 'tspan': state.tspan=+t.dataset.v; break;
+    case 'predMethod': state.predMethod=t.dataset.v; break;
+    case 'predRegister': {
+      const draws=state.store[state.game]; if(draws.length<60) return;
+      const ms=predCached(draws,cfg).methods, m=ms.find(x=>x.key===state.predMethod)||ms[0];
+      flash(ticketFlash(addTicket(state.game,m.picks,1))); return;
+    }
+    case 'closeNotice': state.notice=null; break;
     case 'tdel': state.tickets[state.game]=state.tickets[state.game].filter(x=>x.id!==t.dataset.id); save(); break;
     case 'tclearAll': if(!confirm(cfg.name+'の登録番号をすべて削除しますか?'))return; state.tickets[state.game]=[]; save(); break;
     default: return;

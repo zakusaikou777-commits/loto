@@ -6,11 +6,14 @@
  *   node tools/update-loto.mjs loto6      … ロト6だけ
  *   node tools/update-loto.mjs --dry-run  … ファイルを書かずに結果だけ表示
  *   node tools/update-loto.mjs --recheck 0 … 直近の回の取り直し（訂正の確認）をしない
+ *   node tools/update-loto.mjs --refetch-prizes … 賞金データを読めなかった回も取り直す
  *
  * 設計方針:
  *  - 既存 JSON は絶対に減らさない。取得結果は必ず「マージ」する。
  *  - 1件も正しく解釈できなかった場合は exit 1 で落とす（壊れたデータをコミットさせない）。
  *  - 公式側の訂正を拾うため、手元にある直近の数回も毎回取り直す。内容が変わらなければ書き込まない。
+ *  - 等級ごとの当せん口数・金額、販売実績額、キャリーオーバーも保存する（人気の推定と期待値の表示に使う）。
+ *    まだ持っていない回は、1回の実行の上限（--limit）の残りで少しずつ取りに行く。
  *  - 列の並びを決め打ちしない。ファイル全体の列プロファイルから本数字ブロックを特定する。
  *  - 素の fetch が弾かれた場合のみ Playwright にフォールバックする。
  */
@@ -28,10 +31,10 @@ const DATA_DIR = path.join(ROOT, 'data');
 //   回別CSV   .../loto6/csv/A1022124.CSV     … その回の「本数字,..,ボーナス数字,..」行を含む
 // 目次で回号を把握し、手元に無い回だけ回別CSVを取りに行く。
 const GAMES = {
-  loto6: { key: 'loto6', name: 'ロト6', pick: 6, max: 43, bonus: 1,
+  loto6: { key: 'loto6', name: 'ロト6', pick: 6, max: 43, bonus: 1, ranks: 5,
            indexUrl: 'https://www.mizuhobank.co.jp/retail/takarakuji/loto/loto6/csv/loto6.csv',
            roundUrl: (r) => `https://www.mizuhobank.co.jp/retail/takarakuji/loto/loto6/csv/A102${String(r).padStart(4, '0')}.CSV` },
-  loto7: { key: 'loto7', name: 'ロト7', pick: 7, max: 37, bonus: 2,
+  loto7: { key: 'loto7', name: 'ロト7', pick: 7, max: 37, bonus: 2, ranks: 6,
            indexUrl: 'https://www.mizuhobank.co.jp/retail/takarakuji/loto/loto7/csv/loto7.csv',
            roundUrl: (r) => `https://www.mizuhobank.co.jp/retail/takarakuji/loto/loto7/csv/A103${String(r).padStart(4, '0')}.CSV` },
 };
@@ -240,6 +243,35 @@ export function parseRound(text, cfg) {
   return null;
 }
 
+/** 回別CSVから等級ごとの [当せん口数, 1口あたりの当せん金額] と、販売実績額・キャリーオーバーを取り出す。
+ *  例: １等,該当なし,該当なし / ２等,5口,12345600円 / キャリーオーバー,123456789円 / 販売実績額,1260775000円
+ *  全等級がそろわなければ null を返す（中途半端な値は保存しない）。 */
+export function parsePrize(text, cfg) {
+  const num = (c) => {
+    const t = String(c ?? '');
+    if (/該当なし/.test(t)) return 0;
+    const d = t.replace(/[,，円口]/g, '');
+    return /^\d+$/.test(d) ? +d : null;
+  };
+  const prize = new Array(cfg.ranks).fill(null);
+  let sales = null, carry = null;
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    const cells = splitCells(line);          // 全角数字・引用符の中のカンマもここで処理される
+    const head = cells[0] || '';
+    const m = head.match(/^(\d)等/);
+    if (m) {
+      const r = +m[1];
+      if (r >= 1 && r <= cfg.ranks && !prize[r - 1]) {
+        const w = num(cells[1]), a = num(cells[2]);
+        if (w != null && a != null) prize[r - 1] = [w, a];
+      }
+    } else if (/キャリーオーバー/.test(head)) carry = num(cells[1]);
+    else if (/販売実績/.test(head)) sales = num(cells[1]);
+  }
+  if (prize.some((p) => !p)) return null;
+  return { prize, sales, carry };
+}
+
 /* ---------- 取得 ---------- */
 function decode(buf) {
   const bytes = new Uint8Array(buf);
@@ -348,21 +380,28 @@ async function fetchCsv(url, opts = {}) {
 /* ---------- マージ ---------- */
 const keyOf = (d) => (d.round != null ? `r${d.round}` : `d${d.date}|${d.numbers.join('-')}`);
 
+/* updated: 当せん番号や日付が変わった回（公式側の訂正）/ prize: 賞金データだけが増えた・確かめた回 */
 function mergeDraws(oldDraws, newDraws) {
   const map = new Map();
   for (const d of oldDraws) map.set(keyOf(d), d);
-  let added = 0, updated = 0;
+  const core = (d) => JSON.stringify([d.date, d.numbers, d.bonus]);
+  // prize が undefined（未確認）と null（確認したが読めなかった）は区別する
+  const money = (d) => JSON.stringify([d.prize === undefined ? 'u' : d.prize, d.sales ?? null, d.carry ?? null]);
+  let added = 0, updated = 0, prize = 0;
   for (const d of newDraws) {
     const k = keyOf(d);
     const prev = map.get(k);
-    if (!prev) { map.set(k, d); added++; }
-    else if (JSON.stringify(prev) !== JSON.stringify(d)) { map.set(k, d); updated++; }
+    if (!prev) { map.set(k, d); added++; continue; }
+    // 取り直しで賞金データを読めなかったときに、読めていた値を消さない
+    const next = (d.prize == null && prev.prize) ? { ...d, prize: prev.prize, sales: prev.sales, carry: prev.carry } : d;
+    if (core(prev) !== core(next)) { map.set(k, next); updated++; }
+    else if (money(prev) !== money(next)) { map.set(k, next); prize++; }
   }
   const all = [...map.values()].sort((a, b) => {
     if (a.round != null && b.round != null) return a.round - b.round;
     return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
   });
-  return { draws: all, added, updated };
+  return { draws: all, added, updated, prize };
 }
 
 /* ---------- メイン ---------- */
@@ -439,23 +478,31 @@ async function updateGame(cfg, opts) {
   // さかのぼりの打ち切り（存在しない回が30回続いたら止める）に巻き込まれないよう先に処理する
   const recheck = index.map((x) => x.round).filter((r) => have.has(r))
     .sort((a, b) => b - a).slice(0, opts.recheck ?? RECHECK);
-  const targets = [...recheck, ...missing];
+  // 賞金データをまだ持っていない回。未取得の回を優先し、上限の残りで新しい回から取りに行く
+  const isRecheck = new Set(recheck);
+  const needPrize = (d) => d.prize === undefined || (opts.refetchPrizes && d.prize === null);
+  const prizeTargets = prevDraws.filter((d) => Number.isInteger(d.round) && needPrize(d) && !isRecheck.has(d.round))
+    .map((d) => d.round).sort((a, b) => b - a).slice(0, Math.max(0, opts.limit - missing.length));
+  const targets = [...recheck, ...missing, ...prizeTargets];
 
   if (!targets.length) {
     console.log(`  すでに最新です（手元 ${prevDraws.length}回 / 最新 第${latestRound}回）`);
-    return { added: 0, updated: 0 };
+    return { added: 0, updated: 0, prize: 0 };
   }
   const pc = pace(targets.length);
   const estSec = Math.round(targets.length / pc.conc * (pc.gap + 250) / 1000);
+  const leftPrize = prevDraws.filter((d) => needPrize(d) && !isRecheck.has(d.round)).length - prizeTargets.length;
   console.log(`  未取得 ${missing.length}回`
+            + (prizeTargets.length ? ` + 賞金データ ${prizeTargets.length}回` + (leftPrize > 0 ? `（残り${leftPrize}回は次回以降）` : '') : '')
             + (recheck.length ? ` + 訂正の確認 ${recheck.length}回` : '') + ' を取得します…'
             + `（同時${pc.conc}件 / 間隔${pc.gap}ms / 目安 約${Math.max(1, Math.round(estSec / 60))}分）`);
 
   // 3) 回別CSVを取りに行く
-  const isRecheck = new Set(recheck);
+  const isMissing = new Set(missing);
   // 目次に載っている（＝公開済みの）未取得の回。取れなければ遮断や形式変更を疑う
-  const listed = (r) => dateOf.has(r) && !isRecheck.has(r);
+  const listed = (r) => isMissing.has(r) && dateOf.has(r);
   let okCount = 0, ngCount = 0, newOk = 0, listedOk = 0, listedErr = 0, miss = 0, stopped = false;
+  let prizeNg = 0, prizeDiag = null;
   const fetched = await mapLimit(targets, pc.conc, async (r) => {
     if (stopped) return null;
     try {
@@ -463,9 +510,15 @@ async function updateGame(cfg, opts) {
       const d = parseRound(text, cfg);
       if (!d) { ngCount++; if (listed(r)) listedErr++; return null; }
       okCount++; miss = 0;
-      if (!isRecheck.has(r)) newOk++;
+      if (isMissing.has(r)) newOk++;
       if (listed(r)) listedOk++;
-      return { round: r, date: d.date || dateOf.get(r) || '', numbers: d.numbers, bonus: d.bonus };
+      const pz = parsePrize(text, cfg);
+      if (!pz) {
+        prizeNg++;
+        if (!prizeDiag) prizeDiag = { r, lines: text.split(/\r\n|\r|\n/).filter((l) => l.trim()).slice(0, 14) };
+      }
+      return { round: r, date: d.date || dateOf.get(r) || '', numbers: d.numbers, bonus: d.bonus,
+               ...(pz ? { prize: pz.prize, sales: pz.sales, carry: pz.carry } : { prize: null }) };
     } catch (e) {
       ngCount++;
       if (listed(r) && !(e instanceof HttpError && e.status === 404)) listedErr++;
@@ -479,6 +532,11 @@ async function updateGame(cfg, opts) {
   }, { gap: pc.gap, onProgress: (d, t) => console.log(`    …${d}/${t}回 処理（取得成功 ${okCount}）`) });
   const got = fetched.filter(Boolean);
   console.log(`  取得成功 ${okCount}回 / 失敗・欠番 ${ngCount}回`);
+  // 賞金の行の書式が想定と違うときに原因が分かるよう、読めなかった回の中身をログに残す
+  if (prizeDiag) {
+    console.log(`  ! 賞金データを読み取れなかった回が ${prizeNg}件あります。第${prizeDiag.r}回の中身（診断用）:`);
+    prizeDiag.lines.forEach((l) => console.log(`    | ${l}`));
+  }
 
   // 目次にある回を1件も取れず、原因が欠番(404)以外なら失敗にする。手元にデータがあると
   // 「新しい回が無かった」と区別がつかず、遮断や形式変更でも成功扱いになって気づけないため
@@ -491,7 +549,7 @@ async function updateGame(cfg, opts) {
     console.log('  新しく取得できた回はありませんでした'
       + (opts.back > 0 ? '（これ以上さかのぼれない可能性があります）' : '（回別CSVがまだ公開されていない可能性があります）'));
   if (!got.length) {
-    if (prevDraws.length) return { added: 0, updated: 0 };
+    if (prevDraws.length) return { added: 0, updated: 0, prize: 0 };
     throw new Error(`${cfg.name}: 回別CSVを1件も取得できませんでした`);
   }
 
@@ -500,13 +558,13 @@ async function updateGame(cfg, opts) {
     throw new Error(`${cfg.name}: ${withoutDate}/${got.length} 件で抽せん日を読めませんでした。取り込みを中止します`);
 
   // 4) マージして書き出す
-  const { draws, added, updated } = mergeDraws(prevDraws, got);
+  const { draws, added, updated, prize } = mergeDraws(prevDraws, got);
   if (draws.length < prevDraws.length)
     throw new Error(`${cfg.name}: 件数が減っています (${prevDraws.length} → ${draws.length})。取り込みを中止します`);
   // 中身が同じなのに書き直すと updated の日付だけ変わり、無意味なコミットが毎回できてしまう
-  if (!added && !updated && prevDraws.length) {
+  if (!added && !updated && !prize && prevDraws.length) {
     console.log(`  変更なし（手元 ${prevDraws.length}回 / 最新 第${latestRound}回）。書き込みません`);
-    return { added: 0, updated: 0 };
+    return { added: 0, updated: 0, prize: 0 };
   }
 
   const latest = draws.reduce((a, d) => (d.round != null && d.round > a ? d.round : a), 0);
@@ -522,16 +580,17 @@ async function updateGame(cfg, opts) {
     draws,
   };
 
-  console.log(`  新規 ${added}件 / 更新（公式側の訂正）${updated}件 / 合計 ${draws.length}件`
+  const withPrize = draws.filter((d) => Array.isArray(d.prize)).length;
+  console.log(`  新規 ${added}件 / 更新（公式側の訂正）${updated}件 / 賞金データ ${prize}件 / 合計 ${draws.length}件（賞金データあり ${withPrize}件）`
             + (latest ? ` / 最新 第${latest}回 (${payload.latestDate})` : ''));
   if (missing.length === opts.limit)
     console.log(`  ※ 1回の実行では最大${opts.limit}件までにしています。残りは次回の実行で取得します。`);
 
-  if (opts.dryRun) { console.log('  (dry-run のため書き込みませんでした)'); return { added, updated }; }
+  if (opts.dryRun) { console.log('  (dry-run のため書き込みませんでした)'); return { added, updated, prize }; }
   await mkdir(dataDir, { recursive: true });
   await writeFile(out, JSON.stringify(payload) + '\n', 'utf8');
   console.log(`  → ${path.relative(ROOT, out)} を更新`);
-  return { added, updated };
+  return { added, updated, prize };
 }
 
 export { GAMES, mergeDraws, updateGame };
@@ -552,6 +611,7 @@ if (isMain) {
     limit: numArg('--limit', 150),   // 1回の実行で取りに行く最大回数
     back: numArg('--back', 0),       // 目次より古い回をいくつさかのぼるか
     recheck: numArg('--recheck', RECHECK),   // 訂正の確認のために取り直す直近の回数
+    refetchPrizes: args.includes('--refetch-prizes'),   // 賞金データを読めなかった回も取り直す
   };
   const targets = args.filter((a) => GAMES[a]);
   const list = targets.length ? targets : Object.keys(GAMES);
@@ -560,7 +620,7 @@ if (isMain) {
   for (const k of list) {
     try {
       const r = await updateGame(GAMES[k], opts);
-      changed += r.added + r.updated;
+      changed += r.added + r.updated + (r.prize || 0);
     } catch (e) {
       console.error(`  ✗ ${e.message}`);
       failed++;

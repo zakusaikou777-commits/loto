@@ -15,9 +15,14 @@ on:
         required: false
         default: '0'
       limit:
-        description: '1回の実行で取得する上限（全部取るなら 3000）'
+        description: '1回の実行で取得する上限（全部取るなら 3000）。賞金データの取得もこの上限の残りで行う'
         required: false
         default: '150'
+      refetch_prizes:
+        description: '賞金データを読めなかった回も取り直す（書式の変更に対応したあとに使う）'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -44,6 +49,7 @@ jobs:
         env:
           IN_BACK: ${{ inputs.back || '0' }}
           IN_LIMIT: ${{ inputs.limit || '150' }}
+          IN_REFETCH: ${{ inputs.refetch_prizes && 'yes' || 'no' }}
         run: |
           for v in "$IN_BACK" "$IN_LIMIT"; do
             case "$v" in
@@ -52,6 +58,8 @@ jobs:
           done
           echo "BACK=$IN_BACK"   >> "$GITHUB_ENV"
           echo "LIMIT=$IN_LIMIT" >> "$GITHUB_ENV"
+          # 追加のオプションは入力値そのものではなく、決まった文字列だけを渡す
+          if [ "$IN_REFETCH" = "yes" ]; then echo "EXTRA_ARGS=--refetch-prizes" >> "$GITHUB_ENV"; fi
 
       # 何が置かれているかを最初に出しておく（失敗時の切り分け用）
       - name: リポジトリの中身を確認
@@ -79,7 +87,7 @@ jobs:
       - name: 当せん番号を取得
         id: fetch
         continue-on-error: true
-        run: node tools/update-loto.mjs --back "$BACK" --limit "$LIMIT"
+        run: node tools/update-loto.mjs --back "$BACK" --limit "$LIMIT" $EXTRA_ARGS
 
       # 上が失敗したときだけ、実ブラウザを入れて再試行する
       - name: 失敗したら Playwright で再試行
@@ -89,7 +97,7 @@ jobs:
           npm init -y >/dev/null 2>&1 || true
           npm i -D playwright@latest
           npx playwright install --with-deps chromium
-          node tools/update-loto.mjs --back "$BACK" --limit "$LIMIT"
+          node tools/update-loto.mjs --back "$BACK" --limit "$LIMIT" $EXTRA_ARGS
 
       - name: 取得後の件数
         run: |
